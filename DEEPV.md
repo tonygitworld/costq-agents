@@ -40,11 +40,34 @@
 - ** Profile: 3532 **
 - ** Region: ap-northeast-1 **
 
-## agentcore cli
+## agentcore cli 命令：aws bedrock-agentcore-control
 
-使用命令：aws bedrock-agentcore-control
 
-## 数据库连接通过 Secret Manager 获取:
+## agentcore runtime ID：
 
-- 本地开发环境连接的是云上的 dev 数据库，连接信息存储在 costq/rds/postgresql-dev 密钥中，在本地环境即可连接。
-- 生产环境连接的是云上的 prod 数据库，连接信息存储在 costq/rds/postgresql 密钥中，**需要登录到 EKS Pod 内执行**。
+- 生产环境：cosq_agents_production-JY4CiUDPvV
+
+## agentcore memory ID：
+
+- 生产环境：CostQ_Pro-77Jh0OAr3A
+- 开发环境：CostQ_Dev-Su0pSXBOca
+
+## agentcore 的 cloudwatch 日志组：
+
+1. 生产环境：
+
+1.1. runtime：
+- /aws/bedrock-agentcore/runtimes/cosq_agents_production-JY4CiUDPvV-DEFAULT
+- /aws/vendedlogs/bedrock-agentcore/runtime/USAGE_LOGS/cosq_agents_production-JY4CiUDPvV 
+- /aws/vendedlogs/bedrock-agentcore/runtime/APPLICATION_LOGS/cosq_agents_production-JY4CiUDPvV
+- /aws/vendedlogs/bedrock-agentcore/workload-identity-directory/APPLICATION_LOGS/default
+1.2 memory：
+- /aws/vendedlogs/bedrock-agentcore/memory/APPLICATION_LOGS/CostQ_Pro-77Jh0OAr3A
+
+2. 开发环境
+
+1.1 runtime：
+/aws/bedrock-agentcore/runtimes/cosq_agents_development_lyg-dpj4zV9FKE-DEFAULT
+
+3. trace 日志组：
+- aws/spans
