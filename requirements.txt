@@ -1,38 +1,52 @@
-# Core
+# ============================================
+# CostQ Agent Runtime Dependencies
+# ============================================
+# 说明：此文件为 AgentCore Runtime 运行所需的最小依赖
+# 更新日期：2026-01-23
+# ============================================
+
+# ==================== Core ====================
+# AgentCore Runtime SDK
 bedrock-agentcore>=1.1.0
+
+# Strands Agent Framework（包含 OpenTelemetry 支持）
 strands-agents[otel]
+
+# Strands 工具集（包含 calculator 等）
 strands-agents-tools
 
-# AWS SDK
+# ==================== AWS SDK ====================
 boto3>=1.34.0
 botocore>=1.34.0
 
-# Config
+# ==================== Config ====================
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
 
-# Database
+# ==================== Database ====================
 sqlalchemy>=2.0.25
 psycopg2-binary>=2.9.9
 
-# HTTP
+# ==================== HTTP ====================
 httpx>=0.27.0
 
-# MCP
+# ==================== MCP ====================
+# MCP SDK（用于本地 MCP Server 和 Gateway MCP Client）
 mcp>=1.23.0
+
+# MCP Proxy（用于远程 MCP Server 连接）
 mcp-proxy
 
-# Crypto
+# ==================== Crypto ====================
+# 用于凭证加密/解密（Fernet）
 cryptography
 
-# GCP SDK
+# ==================== GCP SDK ====================
+# GCP 成本分析所需的 SDK
 google-cloud-billing>=1.17.0
 google-cloud-resource-manager>=1.13.0
 google-cloud-bigquery>=3.14.1
 google-cloud-recommender>=2.17.0
 google-cloud-billing-budgets>=1.16.0
-
-# Utilities
-python-dotenv>=1.0.0
-aiohttp>=3.9.1
-cachetools
+google-cloud-compute>=1.14.0
