@@ -66,3 +66,7 @@ temp/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Deployment Scripts (contain sensitive info)
+scripts/*.sh
+scripts/*.py
