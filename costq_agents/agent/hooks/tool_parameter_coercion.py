@@ -71,34 +71,58 @@ class ToolParameterCoercionHook(HookProvider):
         Args:
             event: BeforeToolCallEvent 包含 selected_tool 和 tool_use
         """
+        # ✅ 添加调试日志：确认 Hook 被触发
+        import sys
+        print("🔧🔧🔧 ToolParameterCoercionHook 被触发", file=sys.stderr, flush=True)
+        logger.info("🔧 ToolParameterCoercionHook 被触发")
+
         # 获取工具和参数
         tool = event.selected_tool
         tool_use = event.tool_use
 
         if tool is None:
+            print("⚠️⚠️⚠️ tool is None, 跳过参数转换", file=sys.stderr, flush=True)
+            logger.info("⚠️  tool is None, 跳过参数转换")
             return
 
         tool_name = tool_use.get("name", "")
         tool_input = tool_use.get("input", {})
 
+        # ✅ 记录工具名称和原始参数
+        print(f"🔧 处理工具: {tool_name}, 原始参数: {tool_input}", file=sys.stderr, flush=True)
+        logger.info(f"🔧 处理工具: {tool_name}, 原始参数类型: {type(tool_input)}")
+
         if not isinstance(tool_input, dict):
+            logger.info(f"⚠️  tool_input 不是 dict 类型，跳过参数转换")
             return
 
         # 获取 inputSchema
         try:
             tool_spec = tool.tool_spec
+            logger.info(f"📋 tool_spec 类型: {type(tool_spec)}, keys: {list(tool_spec.keys()) if isinstance(tool_spec, dict) else 'N/A'}")
+
             input_schema = tool_spec.get("inputSchema", {})
+            logger.info(f"📋 inputSchema 原始内容: {str(input_schema)[:500]}")
 
             # inputSchema 可能在 "json" 键下（Bedrock 格式）
             if "json" in input_schema:
+                logger.info(f"📋 发现 json 键，提取中...")
                 input_schema = input_schema["json"]
 
             properties = input_schema.get("properties", {})
+
+            # 添加调试日志
+            logger.info(f"📋 获取到 schema properties 数量: {len(properties)}")
+            if "data_type" in properties:
+                logger.info(f"📋 data_type schema: {properties['data_type']}")
+            else:
+                logger.warning(f"⚠️ data_type 不在 properties 中！properties keys: {list(properties.keys())[:10]}")
         except Exception as e:
-            logger.debug(f"无法获取 {tool_name} 的 inputSchema: {e}")
+            logger.warning(f"⚠️ 无法获取 {tool_name} 的 inputSchema: {e}", exc_info=True)
             return
 
         if not properties:
+            logger.info(f"⚠️ {tool_name} 没有 properties，跳过参数转换")
             return
 
         # 遍历所有参数，检查类型并转换
@@ -110,7 +134,10 @@ class ToolParameterCoercionHook(HookProvider):
             value = tool_input[param_name]
             expected_type = param_schema.get("type")
 
+            logger.info(f"🔍 检查参数 {param_name}: 实际类型={type(value).__name__}, 期望类型={expected_type}, 值={str(value)[:100]}")
+
             if expected_type is None:
+                logger.info(f"⚠️ 参数 {param_name} 没有 expected_type，跳过")
                 continue
 
             # 执行类型转换
