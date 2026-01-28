@@ -11,6 +11,7 @@ from strands import Agent
 from strands.models import BedrockModel
 from strands_tools.calculator import calculator  # 计算器工具（SymPy 底层）
 
+from costq_agents.agent.hooks import ToolParameterCoercionHook
 from costq_agents.config.settings import settings
 
 # 初始化标准 logger
@@ -201,6 +202,7 @@ class AgentManager:
             model=self.bedrock_model,
             system_prompt=self.system_prompt,
             tools=all_tools,
+            hooks=[ToolParameterCoercionHook()],  # 参数类型自动转换
         )
 
         if IS_PRODUCTION:
@@ -411,6 +413,7 @@ class AgentManager:
             model=self.bedrock_model,
             system_prompt=self.system_prompt,
             tools=all_tools,
+            hooks=[ToolParameterCoercionHook()],  # 参数类型自动转换
             session_manager=session_manager,  # 持久化
             conversation_manager=conversation_manager,  # 上下文管理
         )
