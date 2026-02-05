@@ -67,6 +67,56 @@ class AgentManager:
         else:
             logger.info(f"✅ AgentManager初始化 - Model: {self.model_id}")
 
+    @staticmethod
+    def load_bedrock_prompt(prompt_arn: str) -> str:
+        """从 Bedrock Prompt Management 加载 Prompt 内容
+
+        Args:
+            prompt_arn: Prompt ARN（例如：arn:aws:bedrock:...:prompt/xxx:1）
+
+        Returns:
+            Prompt 文本内容
+        """
+        if not prompt_arn:
+            raise ValueError("prompt_arn不能为空")
+
+        parts = prompt_arn.split(":")
+        if len(parts) < 7:
+            raise ValueError(f"无效的 Prompt ARN 格式: {prompt_arn}")
+
+        prompt_id = parts[-2].split("/")[-1]
+        version = parts[-1]
+
+        import boto3
+
+        client = boto3.client(
+            "bedrock-agent",
+            region_name=settings.BEDROCK_PROMPT_REGION,
+        )
+
+        logger.info(
+            "📥 从 Bedrock 加载 Prompt",
+            extra={"prompt_arn": prompt_arn, "prompt_id": prompt_id, "version": version},
+        )
+
+        response = client.get_prompt(
+            promptIdentifier=prompt_id,
+            promptVersion=version,
+        )
+
+        variants = response.get("variants", [])
+        if not variants:
+            raise ValueError(f"Prompt {prompt_arn} 没有 variants")
+
+        prompt_text = variants[0]["templateConfiguration"]["text"]["text"]
+
+        logger.info(
+            "✅ Bedrock Prompt 加载成功",
+            extra={"prompt_id": prompt_id, "version": version, "text_length": len(prompt_text)},
+        )
+
+        return prompt_text
+
     def _create_bedrock_model(self) -> BedrockModel:
         """创建BedrockModel实例
 

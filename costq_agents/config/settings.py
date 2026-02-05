@@ -151,6 +151,20 @@ class Settings(BaseSettings):
         default="ap-northeast-1", description="AgentCore Runtime 所在区域"
     )
 
+    # ==================== Bedrock Prompt Management ====================
+    DIALOG_AWS_PROMPT_ARN: str = Field(
+        default="", description="AWS 对话场景的 Bedrock Prompt ARN"
+    )
+    DIALOG_GCP_PROMPT_ARN: str = Field(
+        default="", description="GCP 对话场景的 Bedrock Prompt ARN"
+    )
+    ALERT_PROMPT_ARN: str = Field(
+        default="", description="告警场景的 Bedrock Prompt ARN"
+    )
+    BEDROCK_PROMPT_REGION: str = Field(
+        default="ap-northeast-1", description="Bedrock Prompt 管理服务区域"
+    )
+
     # ==================== Gateway MCP 配置 ====================
     # Gateway MCP URL（远程 MCP Server 端点）
     # 使用 IAM SigV4 认证，无需明文凭证

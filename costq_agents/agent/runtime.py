@@ -142,25 +142,20 @@ def get_or_create_managers():
         mcp_manager = MCPManager()
     if agent_manager is None:
         logger.info("创建 AgentManager...")
-        from costq_agents.agent.prompts import get_aws_intelligent_agent_prompt
-        from costq_agents.agent.prompts.alert_agent import ALERT_EXECUTION_SYSTEM_PROMPT
         from costq_agents.config.settings import settings
 
-        dialog_system_prompt = get_aws_intelligent_agent_prompt(
-            platform="AWS", include_examples=True
-        )
+        dialog_system_prompt = AgentManager.load_bedrock_prompt(settings.DIALOG_AWS_PROMPT_ARN)
         logger.info(f"✅ 对话提示词加载完成 - 长度: {len(dialog_system_prompt)} 字符")
-        alert_system_prompt = ALERT_EXECUTION_SYSTEM_PROMPT
+        alert_system_prompt = AgentManager.load_bedrock_prompt(settings.ALERT_PROMPT_ARN)
         logger.info(f"✅ 告警提示词加载完成 - 长度: {len(alert_system_prompt)} 字符")
         agent_manager = AgentManager(
             system_prompt=dialog_system_prompt, model_id=settings.BEDROCK_MODEL_ID
         )
         logger.info("✅ 默认 AgentManager 已创建（对话场景）")
-    from costq_agents.agent.prompts import get_aws_intelligent_agent_prompt
-    from costq_agents.agent.prompts.alert_agent import ALERT_EXECUTION_SYSTEM_PROMPT
+    from costq_agents.config.settings import settings
 
-    dialog_system_prompt = get_aws_intelligent_agent_prompt(platform="AWS", include_examples=True)
-    alert_system_prompt = ALERT_EXECUTION_SYSTEM_PROMPT
+    dialog_system_prompt = AgentManager.load_bedrock_prompt(settings.DIALOG_AWS_PROMPT_ARN)
+    alert_system_prompt = AgentManager.load_bedrock_prompt(settings.ALERT_PROMPT_ARN)
     return (mcp_manager, agent_manager, dialog_system_prompt, alert_system_prompt)
 
 
@@ -1036,10 +1031,18 @@ async def invoke(payload: dict[str, Any]):
         )
         memory_client = None
         memory_id = None
+        dialog_agent_manager = agent_mgr
+        if prompt_type == "dialog" and account_type == "gcp":
+            gcp_prompt = AgentManager.load_bedrock_prompt(settings.DIALOG_GCP_PROMPT_ARN)
+            logger.info(f"✅ GCP 对话提示词加载完成 - 长度: {len(gcp_prompt)} 字符")
+            dialog_agent_manager = AgentManager(
+                system_prompt=gcp_prompt, model_id=settings.BEDROCK_MODEL_ID
+            )
         if prompt_type == "alert":
             logger.info("创建告警 Agent（使用告警提示词，无 Memory）")
+            alert_prompt = AgentManager.load_bedrock_prompt(settings.ALERT_PROMPT_ARN)
             alert_agent_manager = AgentManager(
-                system_prompt=alert_system_prompt, model_id=settings.BEDROCK_MODEL_ID
+                system_prompt=alert_prompt, model_id=settings.BEDROCK_MODEL_ID
             )
             agent = alert_agent_manager.create_agent_with_memory(tools=tools)
             logger.info(
@@ -1071,7 +1074,7 @@ async def invoke(payload: dict[str, Any]):
                     loop = asyncio.get_event_loop()
                     return await loop.run_in_executor(
                         executor,
-                        agent_mgr.create_agent_with_memory,
+                        dialog_agent_manager.create_agent_with_memory,
                         tools,
                         memory_client,
                         memory_id,
@@ -1081,6 +1084,8 @@ async def invoke(payload: dict[str, Any]):
                     )
 
                 agent = await asyncio.wait_for(create_with_timeout(), timeout=30.0)
+                if dialog_agent_manager is not agent_mgr:
+                    logger.info("✅ 已使用 GCP 对话提示词创建 Agent")
                 agent_create_duration = time.time() - agent_create_start
                 if agent is None:
                     raise ValueError("Agent创建返回None")
@@ -1120,7 +1125,7 @@ async def invoke(payload: dict[str, Any]):
             if not agent_created:
                 try:
                     logger.info("使用无Memory模式创建Agent（回退）")
-                    agent = agent_mgr.create_agent_with_memory(tools=tools)
+                    agent = dialog_agent_manager.create_agent_with_memory(tools=tools)
                     if agent is None:
                         raise ValueError("Agent创建返回None（无Memory模式）")
                     if not hasattr(agent, "stream_async"):
