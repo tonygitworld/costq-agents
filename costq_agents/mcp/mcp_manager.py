@@ -259,14 +259,6 @@ class MCPManager:
             extra={"tool_count": len(tools)}
         )
 
-        # 🔍 调试：打印 RISP 工具的 inputSchema
-        for tool in tools:
-            if hasattr(tool, 'name') and 'get_sp_utilization_details' in tool.name:
-                logger.info(f"🔍 Gateway 工具原始定义: {tool.name}")
-                logger.info(f"🔍 inputSchema 类型: {type(tool.inputSchema) if hasattr(tool, 'inputSchema') else 'N/A'}")
-                logger.info(f"🔍 inputSchema 内容: {tool.inputSchema if hasattr(tool, 'inputSchema') else 'N/A'}")
-                break
-
         return tools
 
     def _get_env(self, additional_env: dict[str, str] | None = None) -> dict[str, str]:
