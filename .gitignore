@@ -68,7 +68,5 @@ temp/
 .LSOverride
 
 # Deployment Scripts (contain sensitive info)
-scripts/
-
-# docs
-docs/
+scripts/*.sh
+scripts/*.py
