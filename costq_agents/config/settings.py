@@ -93,17 +93,9 @@ class Settings(BaseSettings):
 
     # ==================== MCP服务器配置 ====================
     # AWS MCP服务器列表（本地 stdio 模式）
-    # 注意：billing-cost-management 已迁移到 Gateway MCP，避免重复加载
     AWS_MCP_SERVERS: list[str] = Field(
         default=[
             "common-tools",  # 通用工具集（时间日期等基础功能）
-            # "cost-explorer",  # AWS Cost Explorer (官方) - 已被 common-tools 替代 get_today_date 功能
-            # "risp",  # RI/SP分析 (自定义) - ⚠️ 已迁移到 Gateway MCP，避免重复
-            # "billing-cost-management",  # ⚠️ 已迁移到 Gateway MCP，避免重复
-            # "cloudtrail",  # CloudTrail 日志查询 (官方) - ⚠️ 已迁移到 Gateway MCP，避免重复
-            "pricing",  # AWS Pricing API (官方Python包)
-            "documentation",  # AWS Documentation (官方Python包)
-            # "knowledge",  # AWS Knowledge (官方远程托管服务) - 临时禁用：网络超时问题
             "alert",  # 告警管理 (平台级)
             "send-email",  # 邮件发送服务 (平台级)
         ],

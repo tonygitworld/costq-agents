@@ -58,22 +58,9 @@ class MCPManager:
 
     # 默认MCP服务器列表
     DEFAULT_SERVER_TYPES = [
-        # 通用工具 MCP
         "common-tools",  # 通用工具集（时间日期等基础功能）
-        # AWS MCP - 官方 uvx MCP
-        # "cost-explorer",  # 官方 Cost Explorer（已被 common-tools 替代 get_today_date 功能）
-        # "billing-cost-management",  # 官方 Billing & Cost Management - 已迁移到 Gateway，注释以防回退
-        "pricing",  # 官方 Pricing API (Python包)
-        "documentation",  # 官方 Documentation (Python包)
-        # "knowledge",  # 官方 Knowledge (远程托管服务) - 临时禁用：网络超时问题
-        # "cloudtrail",  # 官方 CloudTrail (Python包) - 已迁移到 Gateway，注释以防回退
-        # AWS MCP - 本地 Python 实现
-        # "risp",  # 自定义 RI/SP 分析 - 已迁移到 Gateway，注释以防回退
-        # 平台级 MCP
         "alert",  # 平台级告警管理
         "send-email",  # 平台级邮件发送（SES）
-        # GCP MCP
-        # "gcp-cost",  # GCP成本分析（需要GCP凭证）
     ]
 
     def __init__(self) -> None:
@@ -357,169 +344,6 @@ class MCPManager:
 
         return env
 
-    def create_cost_explorer_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建Cost Explorer MCP客户端
-
-        使用uvx启动官方MCP Server。
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        Returns:
-            MCPClient: Cost Explorer客户端
-
-        Raises:
-            RuntimeError: 如果uvx命令不可用
-
-        Examples:
-            >>> client = manager.create_cost_explorer_client()
-            >>> client.__enter__()  # 激活客户端
-            >>> tools = client.list_tools_sync()
-
-        Notes:
-            - 需要系统已安装uvx（npm install -g uvx）
-            - 使用官方awslabs.cost-explorer-mcp-server包
-        """
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["awslabs.cost-explorer-mcp-server==0.0.14"],
-            env=self._get_env(additional_env),
-        )
-        return MCPClient(lambda: stdio_client(server_params))
-
-    def create_risp_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建RISP MCP客户端
-
-        使用python -m启动自定义MCP Server。
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        Returns:
-            MCPClient: RISP客户端
-
-        Raises:
-            RuntimeError: 如果Python模块不存在
-        """
-        server_params = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "costq_agents.mcp.risp_mcp_server.server"],
-            cwd=str(self.project_root),
-            env={**self._get_env(additional_env), "PYTHONPATH": str(self.project_root)},
-        )
-        return MCPClient(lambda: stdio_client(server_params))
-
-    def create_cloudtrail_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建CloudTrail MCP客户端（AWS官方Python包）
-
-        官方 CloudTrail MCP Server，提供：
-        - CloudTrail Events: 查询最近 90 天的管理事件
-        - CloudTrail Lake: 执行高级 SQL 查询
-        - User Activity: 用户活动分析
-        - API Call Tracking: API 调用跟踪
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        Returns:
-            MCPClient: CloudTrail 客户端
-
-        Examples:
-            >>> client = manager.create_cloudtrail_client()
-            >>> client.__enter__()
-            >>> tools = client.list_tools_sync()
-
-        Notes:
-            - 需要系统已安装 uvx
-            - 使用官方 awslabs.cloudtrail-mcp-server 包
-            - 版本已锁定：0.0.6（生产稳定性优先）
-        """
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["awslabs.cloudtrail-mcp-server==0.0.6"],
-            env=self._get_env(additional_env),
-        )
-        return MCPClient(lambda: stdio_client(server_params))
-
-    def create_pricing_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建Pricing MCP客户端（AWS官方Python包）
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        版本已锁定：1.0.20（生产稳定性优先）
-        """
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["awslabs.aws-pricing-mcp-server==1.0.20"],
-            env=self._get_env(additional_env),
-        )
-        return MCPClient(lambda: stdio_client(server_params))
-
-    def create_documentation_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建Documentation MCP客户端（AWS官方Python包）
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        版本已锁定：1.1.13（生产稳定性优先）
-        """
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["awslabs.aws-documentation-mcp-server==1.1.13"],
-            env=self._get_env(additional_env),
-        )
-        return MCPClient(lambda: stdio_client(server_params))
-
-    def create_billing_cost_management_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建Billing Cost Management MCP客户端（AWS官方Python包）
-
-        官方综合成本优化和管理 MCP Server，提供：
-        - Cost Optimization Hub: 统合优化建议
-        - Compute Optimizer: 性能优化
-        - Cost Anomaly Detection: 异常检测
-        - Budgets: 预算监控
-        - Free Tier: 免费套餐跟踪
-        - RI/SP Performance: 预留实例性能分析
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        Returns:
-            MCPClient: Billing Cost Management 客户端
-
-        Examples:
-            >>> client = manager.create_billing_cost_management_client()
-            >>> client.__enter__()
-            >>> tools = client.list_tools_sync()
-
-        Notes:
-            - 需要系统已安装 uvx
-            - 使用官方 awslabs.billing-cost-management-mcp-server 包
-            - 版本已锁定：0.0.7（生产稳定性优先）
-        """
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["awslabs.billing-cost-management-mcp-server==0.0.7"],
-            env=self._get_env(additional_env),
-        )
-        return MCPClient(lambda: stdio_client(server_params))
-
-    def create_knowledge_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建Knowledge MCP客户端（AWS远程托管服务）
-
-        使用fastmcp连接到AWS远程托管的Knowledge MCP服务器
-        URL: https://knowledge-mcp.global.api.aws
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-        """
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["fastmcp", "run", "https://knowledge-mcp.global.api.aws"],
-            env=self._get_env(additional_env),
-        )
-        return MCPClient(lambda: stdio_client(server_params))
 
     def create_common_tools_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
         """创建Common Tools MCP客户端（通用工具集）
@@ -660,7 +484,7 @@ class MCPManager:
 
         Examples:
             >>> manager = MCPManager()
-            >>> factory = manager._get_client_factory("cost-explorer")
+            >>> factory = manager._get_client_factory("common-tools")
             >>> client = factory()
 
         Notes:
@@ -670,13 +494,6 @@ class MCPManager:
         """
         factory_map = {
             "common-tools": self.create_common_tools_client,
-            "cost-explorer": self.create_cost_explorer_client,
-            # "risp": self.create_risp_client,  # 已迁移到 Gateway，注释以防回退
-            # "billing-cost-management": self.create_billing_cost_management_client,  # 已迁移到 Gateway，注释以防回退
-            "cloudtrail": self.create_cloudtrail_client,
-            "pricing": self.create_pricing_client,
-            "documentation": self.create_documentation_client,
-            "knowledge": self.create_knowledge_client,
             "alert": self.create_alert_client,
             "send-email": self.create_send_email_client,
             "gcp-cost": self.create_gcp_cost_client,
@@ -796,12 +613,11 @@ class MCPManager:
             ... )
 
         Notes:
-            - AWS场景：9个MCP并行启动，预计耗时8-12秒（vs 串行27-36秒）
+            - AWS场景：3个MCP并行启动（common-tools/alert/send-email）
             - GCP场景：1个MCP，耗时1-2秒（并行无优化效果）
             - 失败的MCP会记录错误日志但不中断流程
             - 所有客户端都会自动激活（调用__enter__）
             - 使用环境变量传递凭证，确保在调用前已设置
-            - knowledge是远程托管服务，需要网络连接
         """
         if server_types is None:
             server_types = self.DEFAULT_SERVER_TYPES
@@ -946,20 +762,6 @@ class MCPManager:
                 client: MCPClient | None = None
                 if server_type == "common-tools":
                     client = self.create_common_tools_client(additional_env)
-                elif server_type == "cost-explorer":
-                    client = self.create_cost_explorer_client(additional_env)
-                # elif server_type == "risp":  # 已迁移到 Gateway，注释以防回退
-                #     client = self.create_risp_client(additional_env)
-                # elif server_type == "billing-cost-management":  # 已迁移到 Gateway，注释以防回退
-                #     client = self.create_billing_cost_management_client(additional_env)
-                elif server_type == "cloudtrail":
-                    client = self.create_cloudtrail_client(additional_env)
-                elif server_type == "pricing":
-                    client = self.create_pricing_client(additional_env)
-                elif server_type == "documentation":
-                    client = self.create_documentation_client(additional_env)
-                elif server_type == "knowledge":
-                    client = self.create_knowledge_client(additional_env)
                 elif server_type == "alert":
                     client = self.create_alert_client(additional_env)
                 elif server_type == "send-email":
