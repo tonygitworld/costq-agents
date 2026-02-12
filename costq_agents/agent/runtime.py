@@ -947,7 +947,6 @@ async def invoke(payload: dict[str, Any]):
                         "Step 6.1: Creating Gateway MCP client (SigV4)",
                         extra={
                             "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
-                            "gateway_mcps": settings.AWS_GATEWAY_MCP_SERVERS,
                         }
                     )
                     gateway_client = mcp_mgr.create_gateway_client(name="gateway-mcp")
@@ -959,10 +958,9 @@ async def invoke(payload: dict[str, Any]):
                     tool_details["gateway"] = len(gateway_tools)
 
                     logger.info(
-                        "✅ Gateway MCP tools loaded",
+                        "✅ Gateway MCP tools loaded (dynamically)",
                         extra={
                             "gateway_tools_count": len(gateway_tools),
-                            "gateway_mcps": settings.AWS_GATEWAY_MCP_SERVERS,
                         }
                     )
 

@@ -102,16 +102,6 @@ class Settings(BaseSettings):
         description="AWS账号启用的MCP服务器列表（本地 stdio 模式）",
     )
 
-    # Gateway MCP 服务器列表（远程 HTTP 模式，使用 SigV4 认证）
-    # 这些 MCP 通过 Gateway URL 连接，无需本地启动子进程
-    AWS_GATEWAY_MCP_SERVERS: list[str] = Field(
-        default=[
-            "billing-cost-management",  # 成本优化和管理 (官方 - 通过 Gateway 连接)
-            "risp",  # RI/SP分析 (自定义 - 通过 Gateway 连接)
-        ],
-        description="通过 Gateway 连接的 MCP 服务器列表",
-    )
-
     # GCP MCP服务器列表（固定为一个集成MCP）
     GCP_MCP_SERVERS: list[str] = Field(
         default=["gcp-cost"],  # 包含所有GCP功能：成本分析、CUD、优化建议、预算管理
