@@ -451,6 +451,7 @@ class AgentManager:
         conversation_manager = SlidingWindowConversationManager(
             window_size=window_size,
             should_truncate_results=True,  # 工具结果过大时自动截断
+            per_turn=True,  # 每次 model 调用前主动检查消息数量，防止短期记忆加载大量历史后首次调用超限
         )
 
         # 4. 创建Agent（添加 calculator 工具）

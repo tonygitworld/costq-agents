@@ -10,7 +10,8 @@
 bedrock-agentcore>=1.1.0
 
 # Strands Agent Framework（包含 OpenTelemetry 支持）
-strands-agents[otel]
+# v1.26.0 修复了 "prompt is too long" 未被识别为 ContextWindowOverflowException 的问题 (PR #1663)
+strands-agents[otel]>=1.26.0
 
 # Strands 工具集（包含 calculator 等）
 strands-agents-tools
