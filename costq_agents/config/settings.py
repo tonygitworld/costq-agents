@@ -152,7 +152,12 @@ class Settings(BaseSettings):
     # 使用 IAM SigV4 认证，无需明文凭证
     COSTQ_AWS_MCP_SERVERS_GATEWAY_URL: str | None = Field(
         default=None,
-        description="Gateway MCP HTTP 端点 URL（如 https://xxx.gateway.bedrock-agentcore.ap-northeast-1.amazonaws.com/mcp）",
+        description="AWS Gateway MCP HTTP 端点 URL（如 https://xxx.gateway.bedrock-agentcore.ap-northeast-1.amazonaws.com/mcp）",
+    )
+
+    COSTQ_GCP_MCP_SERVERS_GATEWAY_URL: str | None = Field(
+        default=None,
+        description="GCP Gateway MCP HTTP 端点 URL（如 https://xxx.gateway.bedrock-agentcore.ap-northeast-1.amazonaws.com/mcp）",
     )
 
     # Gateway MCP 服务名（用于 SigV4 签名）

@@ -219,7 +219,7 @@ class AgentManager:
         )
 
     def create_agent(self, tools: list[Any]) -> Agent:
-        """创建Agent实例（无状态）
+        """创建Agent实例（无状态，自动过滤内置工具冲突）
 
         Args:
             tools: 工具列表（来自MCP客户端）
@@ -242,10 +242,43 @@ class AgentManager:
             - 工具列表应该从MCPManager.create_all_clients()获取
             - 自动添加 calculator 工具用于数学计算（成本分析、百分比计算等）
             - 即使 MCP 工具列表为空，也会包含 calculator 工具
+            - 自动过滤 AgentCore 内置工具（避免名称冲突）
         """
+        # ========== ✅ 新增：过滤 AgentCore 内置工具 ==========
+        # AgentCore Runtime 内置工具列表（避免重复注册导致冲突）
+        AGENTCORE_BUILTIN_TOOLS = {
+            "x_amz_bedrock_agentcore_search",      # Knowledge Base / Memory 检索
+            "x_amz_bedrock_agentcore_retrieve",    # 文档检索
+        }
+
+        # 过滤掉与内置工具冲突的工具
+        filtered_tools = [
+            tool for tool in (tools or [])
+            if getattr(tool, 'name', '') not in AGENTCORE_BUILTIN_TOOLS
+        ]
+
+        # 记录过滤信息
+        removed_count = len(tools or []) - len(filtered_tools)
+        if removed_count > 0:
+            removed_names = [
+                getattr(tool, 'name', '')
+                for tool in (tools or [])
+                if getattr(tool, 'name', '') in AGENTCORE_BUILTIN_TOOLS
+            ]
+            logger.warning(
+                f"⚠️  过滤了 {removed_count} 个 AgentCore 内置工具（避免名称冲突）",
+                extra={
+                    "removed_count": removed_count,
+                    "removed_tools": removed_names,
+                    "total_tools_before": len(tools or []),
+                    "total_tools_after": len(filtered_tools)
+                }
+            )
+        # ========== 结束：过滤逻辑 ==========
+
         # ✅ 将 calculator 工具添加到工具列表（用于成本计算、增长率等数学运算）
         # 注意：即使 tools 为空列表，all_tools 也至少包含 calculator
-        all_tools = [calculator] + (tools if tools else [])
+        all_tools = [calculator] + filtered_tools
 
         agent = Agent(
             model=self.bedrock_model,
@@ -259,11 +292,15 @@ class AgentManager:
                 extra={
                     "tool_count": len(all_tools),
                     "has_calculator": True,
+                    "filtered_count": removed_count,
                     "model_id": self.model_id
                 },
             )
         else:
-            logger.info(f"✅ Agent创建完成 - Tools: {len(all_tools)} (含Calculator)")
+            logger.info(
+                f"✅ Agent创建完成 - Tools: {len(all_tools)} "
+                f"(Calculator + {len(filtered_tools)} MCP, 过滤了 {removed_count} 个内置工具)"
+            )
 
         return agent
 

@@ -675,7 +675,7 @@ async def invoke(payload: dict[str, Any]):
     # 这样可以避免污染主进程环境，OpenTelemetry 会继续使用 Runtime IAM Role
     additional_env: dict[str, str] = {}
 
-    # ✅ 用于清理 GCP 临时凭证文件
+    # ✅ 用于清理 GCP 临时凭证文件（已废弃，保留占位）
     gcp_temp_file: str | None = None
 
     credentials_start = time.time()
@@ -742,50 +742,11 @@ async def invoke(payload: dict[str, Any]):
             logger.error(error_msg, extra={"account_id": account_id})
             yield {"error": error_msg}
             return
-        try:
-            import json
-            import tempfile
-
-            from costq_agents.services.gcp_credential_manager import get_gcp_credential_manager
-
-            logger.info("Decrypting GCP service account JSON")
-            gcp_credential_manager = get_gcp_credential_manager()
-            service_account_json = gcp_credential_manager.decrypt_credentials(secret_key_encrypted)
-            logger.info(
-                "GCP service account JSON decrypted successfully",
-                extra={"project_id": account_id_db},
-            )
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                json.dump(service_account_json, f)
-                service_account_file = f.name
-                gcp_temp_file = service_account_file  # ✅ 记录文件路径，用于后续清理
-            # ✅ 存储到隔离字典，不设置 os.environ
-            additional_env["GOOGLE_APPLICATION_CREDENTIALS"] = service_account_file
-            additional_env["GCP_PROJECT_ID"] = account_id_db
-            additional_env["GCP_ACCOUNT_ID"] = account_id
-            logger.info(
-                "GCP credentials set successfully (storing to isolated env dict)",
-                extra={
-                    "project_id": account_id_db,
-                    "credentials_file": service_account_file,
-                    "env_isolation": True,  # ✅ 标记：隔离存储
-                },
-            )
-        except Exception as e:
-            error_msg = f"Failed to decrypt GCP service account JSON: {str(e)}"
-            logger.error(
-                error_msg,
-                extra={
-                    "account_id": account_id,
-                    "error_type": type(e).__name__,
-                    "error_details": str(e),
-                },
-            )
-            import traceback
-
-            logger.error("GCP credentials traceback", extra={"traceback": traceback.format_exc()})
-            yield {"error": error_msg}
-            return
+        # GCP Gateway 模式：不再在 Runtime 解密并写入临时文件
+        logger.info(
+            "GCP credentials will be resolved by Gateway runtime (no local temp file)",
+            extra={"account_id": account_id, "env_isolation": True},
+        )
     else:
         if not access_key_id or not secret_key_encrypted:
             error_msg = f"AKSK credentials not configured for account: {account_id}"
@@ -860,11 +821,11 @@ async def invoke(payload: dict[str, Any]):
             from costq_agents.config.settings import settings
 
             if account_type == "gcp":
-                available_mcps = settings.GCP_MCP_SERVERS
-                logger.info("GCP场景：只有1个MCP，并行优化效果有限")
+                available_mcps = []  # GCP 仅使用 Gateway MCP，不加载 Local MCP
+                logger.info("GCP场景：仅使用 Gateway MCP，不加载 Local MCP")
             else:
                 available_mcps = settings.AWS_MCP_SERVERS
-                logger.info(f"AWS场景：{len(available_mcps)}个MCP")
+                logger.info(f"AWS场景：{len(available_mcps)}个 Local MCP")
             mcp_span.set_attribute("costq_agents.mcp.account_type", account_type)
             mcp_span.set_attribute("costq_agents.mcp.servers_requested", len(available_mcps))
             logger.info(
@@ -939,50 +900,85 @@ async def invoke(payload: dict[str, Any]):
             )
 
             # ========== 2. 收集 Gateway MCP 工具（HTTP + SigV4 模式）==========
-            # 仅当配置了 Gateway URL 且是 AWS 账号时加载
-            gateway_url = settings.COSTQ_AWS_MCP_SERVERS_GATEWAY_URL
-            if gateway_url and account_type == "aws":
-                try:
-                    logger.info(
-                        "Step 6.1: Creating Gateway MCP client (SigV4)",
-                        extra={
-                            "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
-                        }
-                    )
-                    gateway_client = mcp_mgr.create_gateway_client(name="gateway-mcp")
-                    gateway_client.__enter__()  # 激活连接
+            if account_type == "aws":
+                gateway_url = settings.COSTQ_AWS_MCP_SERVERS_GATEWAY_URL
+                if gateway_url:
+                    try:
+                        logger.info(
+                            "Step 6.1: Creating AWS Gateway MCP client (SigV4)",
+                            extra={
+                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
+                            }
+                        )
+                        gateway_client = mcp_mgr.create_gateway_client(name="gateway-mcp")
+                        gateway_client.__enter__()  # 激活连接
 
-                    # 获取完整工具列表（处理分页）
-                    gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
-                    tools.extend(gateway_tools)
-                    tool_details["gateway"] = len(gateway_tools)
+                        # 获取完整工具列表（处理分页）
+                        gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
+                        tools.extend(gateway_tools)
+                        tool_details["gateway"] = len(gateway_tools)
 
-                    logger.info(
-                        "✅ Gateway MCP tools loaded (dynamically)",
-                        extra={
-                            "gateway_tools_count": len(gateway_tools),
-                        }
-                    )
+                        logger.info(
+                            "✅ Gateway MCP tools loaded (dynamically)",
+                            extra={
+                                "gateway_tools_count": len(gateway_tools),
+                            }
+                        )
 
-                    # 注意：gateway_client 需要在 Agent 使用完毕后关闭
-                    # 这里先保存引用，后续在清理阶段处理
-                    clients_dict["gateway"] = gateway_client
+                        # 注意：gateway_client 需要在 Agent 使用完毕后关闭
+                        # 这里先保存引用，后续在清理阶段处理
+                        clients_dict["gateway"] = gateway_client
 
-                except Exception as e:
-                    logger.error(
-                        "❌ Failed to load Gateway MCP tools",
-                        extra={
-                            "error_type": type(e).__name__,
-                            "error": str(e),
-                            "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
-                        },
-                    )
-                    tool_details["gateway"] = 0
-            else:
-                if not gateway_url:
-                    logger.info("Gateway MCP 未配置（COSTQ_AWS_MCP_SERVERS_GATEWAY_URL 未设置），跳过")
-                elif account_type != "aws":
-                    logger.info(f"Gateway MCP 仅支持 AWS 账号，当前账号类型: {account_type}")
+                    except Exception as e:
+                        logger.error(
+                            "❌ Failed to load AWS Gateway MCP tools",
+                            extra={
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
+                            },
+                        )
+                        tool_details["gateway"] = 0
+                else:
+                    logger.info("AWS Gateway MCP 未配置（COSTQ_AWS_MCP_SERVERS_GATEWAY_URL 未设置），跳过")
+            elif account_type == "gcp":
+                gateway_url = settings.COSTQ_GCP_MCP_SERVERS_GATEWAY_URL
+                if gateway_url:
+                    try:
+                        logger.info(
+                            "Step 6.1: Creating GCP Gateway MCP client (SigV4)",
+                            extra={
+                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
+                            }
+                        )
+                        gateway_client = mcp_mgr.create_gcp_gateway_client(name="gcp-gateway-mcp")
+                        gateway_client.__enter__()
+
+                        gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
+                        tools.extend(gateway_tools)
+                        tool_details["gateway-gcp"] = len(gateway_tools)
+
+                        logger.info(
+                            "✅ GCP Gateway MCP tools loaded (dynamically)",
+                            extra={
+                                "gateway_tools_count": len(gateway_tools),
+                            }
+                        )
+
+                        clients_dict["gateway-gcp"] = gateway_client
+
+                    except Exception as e:
+                        logger.error(
+                            "❌ Failed to load GCP Gateway MCP tools",
+                            extra={
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
+                            },
+                        )
+                        tool_details["gateway-gcp"] = 0
+                else:
+                    logger.info("GCP Gateway MCP 未配置（COSTQ_GCP_MCP_SERVERS_GATEWAY_URL 未设置），跳过")
 
             mcp_span.set_attribute("costq_agents.mcp.total_tools", len(tools))
             mcp_span.set_attribute("costq_agents.mcp.local_tools", local_tools_count)
@@ -1426,25 +1422,12 @@ async def invoke(payload: dict[str, Any]):
             root_span.set_status(trace.Status(trace.StatusCode.ERROR, error_msg))
             yield {"error": str(e), "type": type(e).__name__}
         finally:
-            # ✅ 清理 GCP 临时凭证文件（防止敏感信息泄漏）
+            # ✅ GCP 临时凭证文件已废弃（Gateway 模式无需清理）
             if gcp_temp_file:
-                try:
-                    # 使用全局的 os 模块（已在文件顶部导入）
-                    if os.path.exists(gcp_temp_file):
-                        os.unlink(gcp_temp_file)
-                        logger.info(
-                            "✅ GCP 临时凭证文件已清理",
-                            extra={"file": gcp_temp_file}
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "⚠️ 清理 GCP 临时文件失败",
-                        extra={
-                            "file": gcp_temp_file,
-                            "error": str(e),
-                            "error_type": type(e).__name__
-                        }
-                    )
+                logger.warning(
+                    "⚠️ 检测到遗留的 GCP 临时凭证文件占位变量",
+                    extra={"file": gcp_temp_file}
+                )
 
             if context_token is not None:
                 try:

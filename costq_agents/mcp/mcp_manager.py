@@ -134,7 +134,8 @@ class MCPManager:
     def create_gateway_client(
         self,
         gateway_url: str | None = None,
-        name: str = "gateway-mcp"
+        name: str = "gateway-mcp",
+        env_var_name: str = "COSTQ_AWS_MCP_SERVERS_GATEWAY_URL",
     ) -> MCPClient:
         """创建 Gateway MCP 客户端（使用 IAM SigV4 认证）
 
@@ -143,8 +144,9 @@ class MCPManager:
 
         Args:
             gateway_url: Gateway HTTP 端点 URL
-                (默认从环境变量 COSTQ_AWS_MCP_SERVERS_GATEWAY_URL 获取)
+                (默认从环境变量读取)
             name: 客户端名称（用于日志）
+            env_var_name: Gateway URL 的环境变量名
 
         Returns:
             MCPClient: Gateway 客户端（与本地客户端接口一致）
@@ -152,26 +154,48 @@ class MCPManager:
         Raises:
             ValueError: 如果 Gateway URL 未配置或 AWS 凭证获取失败
 
-        Examples:
-            >>> manager = MCPManager()
-            >>> client = manager.create_gateway_client()
-            >>> client.__enter__()  # 激活客户端
-            >>> tools = client.list_tools_sync()
-            >>> client.__exit__(None, None, None)  # 关闭客户端
-
         Notes:
             - 使用 IAM SigV4 认证（自动获取凭证）
             - 本地开发：使用 AWS_PROFILE 环境变量
             - 生产环境：使用 IAM Role（自动）
         """
         if gateway_url is None:
-            gateway_url = self.gateway_url
+            gateway_url = os.getenv(env_var_name, "")
 
         if not gateway_url:
             raise ValueError(
-                "Gateway URL 未配置，请设置环境变量 COSTQ_AWS_MCP_SERVERS_GATEWAY_URL\n"
-                "示例: export COSTQ_AWS_MCP_SERVERS_GATEWAY_URL=https://xxx.gateway.bedrock-agentcore.ap-northeast-1.amazonaws.com/mcp"
+                f"Gateway URL 未配置，请设置环境变量 {env_var_name}\n"
+                f"示例: export {env_var_name}=https://xxx.gateway.bedrock-agentcore.ap-northeast-1.amazonaws.com/mcp"
             )
+
+        # 从 boto3 Session 获取凭证（自动使用 Profile 或 IAM Role）
+        credentials = self._get_aws_credentials()
+
+        # 获取 SigV4 签名参数
+        service = self.gateway_service
+        region = self.gateway_region
+
+        # 创建带 SigV4 签名的 transport factory
+        def create_transport():
+            return streamablehttp_client_with_sigv4(
+                url=gateway_url,
+                credentials=credentials,
+                service=service,
+                region=region,
+            )
+
+        logger.info(
+            "✅ 创建 Gateway MCP 客户端",
+            extra={
+                "mcp_name": name,
+                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
+                "service": service,
+                "region": region,
+                "auth_type": "SigV4"
+            }
+        )
+
+        return MCPClient(create_transport)
 
         # 从 boto3 Session 获取凭证（自动使用 Profile 或 IAM Role）
         credentials = self._get_aws_credentials()
@@ -229,10 +253,27 @@ class MCPManager:
         """
         tools = []
         pagination_token = None
+        truncated_count = 0
 
         while True:
             # 获取工具列表（带分页）
             result = client.list_tools_sync(pagination_token=pagination_token)
+
+            # ✅ 修复：截断超过64字符的工具名称（Bedrock Converse API 限制）
+            for tool in result:
+                if len(tool.tool_name) > 64:
+                    original_name = tool.tool_name
+                    tool.tool_name = tool.tool_name[:64]  # 截断到64字符
+                    truncated_count += 1
+                    logger.warning(
+                        "⚠️  工具名称超过64字符，已截断",
+                        extra={
+                            "original_name": original_name,
+                            "truncated_name": tool.tool_name,
+                            "original_length": len(original_name),
+                        }
+                    )
+
             tools.extend(result)
 
             # 检查是否有更多页
@@ -243,7 +284,10 @@ class MCPManager:
 
         logger.info(
             "✅ 获取完整工具列表",
-            extra={"tool_count": len(tools)}
+            extra={
+                "tool_count": len(tools),
+                "truncated_count": truncated_count,
+            }
         )
 
         return tools
@@ -419,59 +463,25 @@ class MCPManager:
         return MCPClient(lambda: stdio_client(server_params))
 
     def create_gcp_cost_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建GCP Cost MCP客户端
+        """创建GCP Cost MCP客户端（已弃用，仅保留占位）
 
-        使用平台级凭证（从数据库读取GCP Service Account）。
-        包含GCP成本分析、CUD分析、优化建议、预算管理等所有GCP功能。
-
-        Args:
-            additional_env: 额外的环境变量（隔离传递给子进程）
-
-        Returns:
-            MCPClient: GCP Cost客户端
-
-        Notes:
-            - 使用平台级凭证（不需要TARGET_ACCOUNT_ID）
-            - GCP MCP内部通过GCPCredentialsProvider读取数据库
-            - 需要设置GCP_PROJECT_ID和GCP_ACCOUNT_ID环境变量
-            - 包含24个工具：成本分析、CUD分析、优化建议、预算管理
+        GCP MCP 现通过 Gateway 连接，不再使用本地 stdio 子进程。
         """
-        # ✅ 构建基础环境变量（包含 additional_env）
-        env = self._get_env(additional_env)
-        env["PYTHONPATH"] = str(self.project_root)
-
-        # ✅ 只有当 additional_env 中没有时，才从 os.environ 读取（向后兼容）
-        if "GCP_PROJECT_ID" not in env:
-            env["GCP_PROJECT_ID"] = os.getenv("GCP_PROJECT_ID", "")
-        if "GCP_ACCOUNT_ID" not in env:
-            env["GCP_ACCOUNT_ID"] = os.getenv("GCP_ACCOUNT_ID", "")
-
-        # ✅ 平台级配置：优先从 additional_env 读取，回退到 os.environ
-        if "ENCRYPTION_KEY" not in env:
-            env["ENCRYPTION_KEY"] = os.getenv("ENCRYPTION_KEY", "")
-        if "DATABASE_URL" not in env:
-            env["DATABASE_URL"] = os.getenv("DATABASE_URL", "")
-        if "RDS_SECRET_NAME" not in env:
-            env["RDS_SECRET_NAME"] = os.getenv("RDS_SECRET_NAME", "")
-
-        # ✅ 验证日志：确认环境变量正确传递
-        logger.info(
-            "🔍 GCP MCP 环境变量传递",
-            extra={
-                "gcp_project_id": env.get("GCP_PROJECT_ID", "(未设置)"),
-                "gcp_account_id": env.get("GCP_ACCOUNT_ID", "(未设置)")[:50] + "..." if env.get("GCP_ACCOUNT_ID") else "(未设置)",
-                "has_google_creds": bool(env.get("GOOGLE_APPLICATION_CREDENTIALS")),
-                "credentials_file": env.get("GOOGLE_APPLICATION_CREDENTIALS", "(未设置)")
-            }
+        raise RuntimeError(
+            "GCP MCP stdio client is deprecated. Use create_gcp_gateway_client()."
         )
 
-        server_params = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "costq_agents.mcp.gcp_cost_mcp_server.server"],
-            cwd=str(self.project_root),
-            env=env,
+    def create_gcp_gateway_client(
+        self,
+        gateway_url: str | None = None,
+        name: str = "gcp-gateway-mcp",
+    ) -> MCPClient:
+        """创建 GCP Gateway MCP 客户端（使用 IAM SigV4 认证）"""
+        return self.create_gateway_client(
+            gateway_url=gateway_url,
+            name=name,
+            env_var_name="COSTQ_GCP_MCP_SERVERS_GATEWAY_URL",
         )
-        return MCPClient(lambda: stdio_client(server_params))
 
     def _get_client_factory(self, server_type: str):
         """获取MCP客户端工厂方法（消除代码重复）
@@ -497,6 +507,7 @@ class MCPManager:
             "alert": self.create_alert_client,
             "send-email": self.create_send_email_client,
             "gcp-cost": self.create_gcp_cost_client,
+            "gcp-gateway": self.create_gcp_gateway_client,
         }
         return factory_map.get(server_type)
 
@@ -607,14 +618,14 @@ class MCPManager:
             >>> clients = manager.create_all_clients_parallel()
             >>> print(f"成功创建 {len(clients)} 个MCP")
 
-            >>> # GCP场景：只有1个MCP，并行无优化效果
+            >>> # GCP场景：使用 Gateway MCP
             >>> clients = manager.create_all_clients_parallel(
-            ...     server_types=["gcp-cost"]
+            ...     server_types=["gcp-gateway"]
             ... )
 
         Notes:
             - AWS场景：3个MCP并行启动（common-tools/alert/send-email）
-            - GCP场景：1个MCP，耗时1-2秒（并行无优化效果）
+            - GCP场景：使用 Gateway MCP
             - 失败的MCP会记录错误日志但不中断流程
             - 所有客户端都会自动激活（调用__enter__）
             - 使用环境变量传递凭证，确保在调用前已设置
@@ -767,7 +778,13 @@ class MCPManager:
                 elif server_type == "send-email":
                     client = self.create_send_email_client(additional_env)
                 elif server_type == "gcp-cost":
-                    client = self.create_gcp_cost_client(additional_env)
+                    logger.warning(
+                        "gcp-cost 已弃用，请使用 gcp-gateway",
+                        extra={"server_type": server_type}
+                    )
+                    continue
+                elif server_type == "gcp-gateway":
+                    client = self.create_gcp_gateway_client()
                 else:
                     logger.warning("未知MCP类型，跳过", extra={"server_type": server_type})
                     continue
