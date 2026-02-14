@@ -43,11 +43,3 @@ mcp-proxy
 # 用于凭证加密/解密（Fernet）
 cryptography
 
-# ==================== GCP SDK ====================
-# GCP 成本分析所需的 SDK
-google-cloud-billing>=1.17.0
-google-cloud-resource-manager>=1.13.0
-google-cloud-bigquery>=3.14.1
-google-cloud-recommender>=2.17.0
-google-cloud-billing-budgets>=1.16.0
-google-cloud-compute>=1.14.0

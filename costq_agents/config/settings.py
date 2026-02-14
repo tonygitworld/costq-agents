@@ -102,12 +102,6 @@ class Settings(BaseSettings):
         description="AWS账号启用的MCP服务器列表（本地 stdio 模式）",
     )
 
-    # GCP MCP服务器列表（固定为一个集成MCP）
-    GCP_MCP_SERVERS: list[str] = Field(
-        default=["gcp-cost"],  # 包含所有GCP功能：成本分析、CUD、优化建议、预算管理
-        description="GCP账号启用的MCP服务器列表",
-    )
-
     # ==================== 云资源配置 ====================
     # AWS Secrets Manager 密钥名称
     # 本地开发时指向 Dev 密钥，生产环境指向 Prod 密钥

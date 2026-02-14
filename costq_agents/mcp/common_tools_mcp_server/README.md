@@ -174,7 +174,6 @@ clients = manager.create_all_clients()  # 自动包含 common-tools
 
 - [MCP Manager 文档](../README.md)
 - [系统提示词 - 时间处理](../../agent/prompts/shared/time_handling.md)
-- [GCP Cost 示例](../../agent/prompts/examples/gcp_cost.md)
 - [成本分析示例](../../agent/prompts/examples/cost_analysis.md)
 
 ## 🔄 版本历史

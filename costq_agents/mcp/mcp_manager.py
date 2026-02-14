@@ -462,15 +462,6 @@ class MCPManager:
         )
         return MCPClient(lambda: stdio_client(server_params))
 
-    def create_gcp_cost_client(self, additional_env: dict[str, str] | None = None) -> MCPClient:
-        """创建GCP Cost MCP客户端（已弃用，仅保留占位）
-
-        GCP MCP 现通过 Gateway 连接，不再使用本地 stdio 子进程。
-        """
-        raise RuntimeError(
-            "GCP MCP stdio client is deprecated. Use create_gcp_gateway_client()."
-        )
-
     def create_gcp_gateway_client(
         self,
         gateway_url: str | None = None,
@@ -506,7 +497,6 @@ class MCPManager:
             "common-tools": self.create_common_tools_client,
             "alert": self.create_alert_client,
             "send-email": self.create_send_email_client,
-            "gcp-cost": self.create_gcp_cost_client,
             "gcp-gateway": self.create_gcp_gateway_client,
         }
         return factory_map.get(server_type)
@@ -777,12 +767,6 @@ class MCPManager:
                     client = self.create_alert_client(additional_env)
                 elif server_type == "send-email":
                     client = self.create_send_email_client(additional_env)
-                elif server_type == "gcp-cost":
-                    logger.warning(
-                        "gcp-cost 已弃用，请使用 gcp-gateway",
-                        extra={"server_type": server_type}
-                    )
-                    continue
                 elif server_type == "gcp-gateway":
                     client = self.create_gcp_gateway_client()
                 else:
