@@ -317,6 +317,8 @@ async def invoke(payload: dict[str, Any]):
     """
     import json
 
+    from costq_agents.config.settings import settings
+
     invoke_start_time = time.time()
     runtime_uptime = get_runtime_uptime()
     is_cold = is_cold_start(threshold_seconds=60)
@@ -831,7 +833,6 @@ async def invoke(payload: dict[str, Any]):
         try:
             mcp_start_time = time.time()
             logger.info("创建 MCP 客户端...")
-            from costq_agents.config.settings import settings
 
             if account_type == "gcp":
                 available_mcps = []  # GCP 仅使用 Gateway MCP，不加载 Local MCP
