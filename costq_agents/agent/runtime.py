@@ -282,6 +282,7 @@ async def invoke(payload: dict[str, Any]):
             - session_id: 会话 ID（可选，对话场景使用）
             - user_id: 用户 ID（可选，对话场景使用）
             - org_id: 组织 ID（可选，对话场景使用）
+            - model_id: AI 模型 ID（可选，如不提供则使用默认模型）
 
     Yields:
         Dict[str, Any]: 流式事件
@@ -306,6 +307,13 @@ async def invoke(payload: dict[str, Any]):
         ...     "prompt_type": "alert",  # ✅ 关键参数
         ... }
         >>> # 告警场景不需要 session_id、user_id
+        
+        >>> # 使用自定义模型
+        >>> payload = {
+        ...     "prompt": "查询成本",
+        ...     "account_id": "123456789012",
+        ...     "model_id": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        ... }
     """
     import json
 
@@ -367,6 +375,11 @@ async def invoke(payload: dict[str, Any]):
         session_id = payload.get("session_id")
         user_id = payload.get("user_id")
         org_id = payload.get("org_id")
+        
+        # ✅ 从 payload 提取 model_id，如不提供则使用默认模型
+        model_id = payload.get("model_id") or settings.BEDROCK_MODEL_ID
+        logger.info("Model ID determined", extra={"model_id": model_id})
+        
         step1_duration = time.time() - step1_start
         logger.debug(
             "⏱️ Step 1: Payload解析完成",
@@ -1025,18 +1038,27 @@ async def invoke(payload: dict[str, Any]):
         )
         memory_client = None
         memory_id = None
-        dialog_agent_manager = agent_mgr
+        
+        # ✅ 始终使用前端传过来的 model_id 创建 AgentManager
+        dialog_agent_manager = AgentManager(
+            system_prompt=dialog_system_prompt, model_id=model_id
+        )
+        logger.info(
+            "AgentManager 已创建",
+            extra={"model_id": model_id},
+        )
+        
         if prompt_type == "dialog" and account_type == "gcp":
             gcp_prompt = AgentManager.load_bedrock_prompt(settings.DIALOG_GCP_PROMPT_ARN)
             logger.info(f"✅ GCP 对话提示词加载完成 - 长度: {len(gcp_prompt)} 字符")
             dialog_agent_manager = AgentManager(
-                system_prompt=gcp_prompt, model_id=settings.BEDROCK_MODEL_ID
+                system_prompt=gcp_prompt, model_id=model_id
             )
         if prompt_type == "alert":
             logger.info("创建告警 Agent（使用告警提示词，无 Memory）")
             alert_prompt = AgentManager.load_bedrock_prompt(settings.ALERT_PROMPT_ARN)
             alert_agent_manager = AgentManager(
-                system_prompt=alert_prompt, model_id=settings.BEDROCK_MODEL_ID
+                system_prompt=alert_prompt, model_id=model_id
             )
             agent = alert_agent_manager.create_agent_with_memory(tools=tools)
             logger.info(
