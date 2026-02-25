@@ -1216,7 +1216,34 @@ async def invoke(payload: dict[str, Any]):
                     )
                 },
             )
-            stream = agent.stream_async(user_message)
+            # ✅ 构建用户消息（支持多模态：文本 + 图片）
+            images_data = payload.get("images")
+            if images_data and len(images_data) > 0:
+                # 多模态消息：文本 + 图片（Bedrock Converse API 格式）
+                import base64
+                user_content = [{"text": user_message}]
+                for img in images_data:
+                    mime_type = img.get("mime_type", "image/jpeg")
+                    b64_data = img.get("base64_data", "")
+                    user_content.append({
+                        "image": {
+                            "format": mime_type.split("/")[-1].replace("jpeg", "jpeg"),
+                            "source": {
+                                "bytes": base64.b64decode(b64_data),
+                            },
+                        }
+                    })
+                logger.info(
+                    "📷 多模态消息构建完成",
+                    extra={
+                        "text_length": len(user_message),
+                        "image_count": len(images_data),
+                        "image_types": [img.get("mime_type") for img in images_data],
+                    },
+                )
+                stream = agent.stream_async(user_content)
+            else:
+                stream = agent.stream_async(user_message)
             logger.info("Agent stream started")
             async for event in stream:
                 event_count += 1
