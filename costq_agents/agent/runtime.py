@@ -264,6 +264,9 @@ def _mime_to_document_format(mime_type: str) -> str:
     """将 MIME 类型映射为 Bedrock Converse API document format
 
     Bedrock 允许的 format 枚举值: docx, csv, html, txt, pdf, md, doc, xlsx, xls
+
+    Raises:
+        ValueError: 当 mime_type 不在白名单内时抛出，由调用方决定是否跳过该文件
     """
     mapping = {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
@@ -276,7 +279,10 @@ def _mime_to_document_format(mime_type: str) -> str:
         "text/markdown": "md",
         "text/plain": "txt",
     }
-    return mapping.get(mime_type, mime_type.split("/")[-1])
+    result = mapping.get(mime_type)
+    if result is None:
+        raise ValueError(f"不支持的文档 MIME 类型: {mime_type}，Bedrock 支持: {list(mapping.values())}")
+    return result
 
 
 def _sanitize_document_name(file_name: str) -> str:
@@ -1261,16 +1267,23 @@ async def invoke(payload: dict[str, Any]):
                 # 追加图片 content blocks
                 if has_images:
                     for img in images_data:
-                        mime_type = img.get("mime_type", "image/jpeg")
-                        b64_data = img.get("base64_data", "")
-                        user_content.append({
-                            "image": {
-                                "format": mime_type.split("/")[-1].replace("jpeg", "jpeg"),
-                                "source": {
-                                    "bytes": base64.b64decode(b64_data),
-                                },
-                            }
-                        })
+                        try:
+                            mime_type = img.get("mime_type", "image/jpeg")
+                            b64_data = img.get("base64_data", "")
+                            img_bytes = base64.b64decode(b64_data)
+                            user_content.append({
+                                "image": {
+                                    "format": mime_type.split("/")[-1],
+                                    "source": {
+                                        "bytes": img_bytes,
+                                    },
+                                }
+                            })
+                        except Exception as e:
+                            logger.warning(
+                                "⚠️ 图片附件处理失败，跳过该图片",
+                                extra={"file_name": img.get("file_name"), "error": str(e)},
+                            )
 
                 # 追加文档 content blocks（Excel 等）
                 if has_files:
