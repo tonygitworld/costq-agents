@@ -261,12 +261,20 @@ def filter_event(event: dict) -> dict:
 # ========== 文档附件辅助函数 ==========
 
 def _mime_to_document_format(mime_type: str) -> str:
-    """将 MIME 类型映射为 Bedrock Converse API document format"""
+    """将 MIME 类型映射为 Bedrock Converse API document format
+
+    Bedrock 允许的 format 枚举值: docx, csv, html, txt, pdf, md, doc, xlsx, xls
+    """
     mapping = {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
         "application/vnd.ms-excel": "xls",
         "application/pdf": "pdf",
         "text/csv": "csv",
+        "text/html": "html",
+        "application/msword": "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "text/markdown": "md",
+        "text/plain": "txt",
     }
     return mapping.get(mime_type, mime_type.split("/")[-1])
 
