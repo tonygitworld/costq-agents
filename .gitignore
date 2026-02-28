@@ -72,3 +72,7 @@ scripts/
 
 # docs
 docs/
+
+# Local dev standards (not for version control)
+CODING_STANDARDS.md
+DEEPV.md

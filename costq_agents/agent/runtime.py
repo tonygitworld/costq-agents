@@ -258,6 +258,44 @@ def filter_event(event: dict) -> dict:
     return filtered
 
 
+# ========== 文档附件辅助函数 ==========
+
+def _mime_to_document_format(mime_type: str) -> str:
+    """将 MIME 类型映射为 Bedrock Converse API document format
+
+    Bedrock 允许的 format 枚举值: docx, csv, html, txt, pdf, md, doc, xlsx, xls
+
+    Raises:
+        ValueError: 当 mime_type 不在白名单内时抛出，由调用方决定是否跳过该文件
+    """
+    mapping = {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.ms-excel": "xls",
+        "application/pdf": "pdf",
+        "text/csv": "csv",
+        "text/html": "html",
+        "application/msword": "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "text/markdown": "md",
+        "text/plain": "txt",
+    }
+    result = mapping.get(mime_type)
+    if result is None:
+        raise ValueError(f"不支持的文档 MIME 类型: {mime_type}，Bedrock 支持: {list(mapping.values())}")
+    return result
+
+
+def _sanitize_document_name(file_name: str) -> str:
+    """清洗文件名以符合 Bedrock API 要求：仅 [a-zA-Z0-9_-]，最长 200 字符"""
+    import re
+    name = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
+    name = name.replace(" ", "_")
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', name)
+    if not name:
+        name = "document"
+    return name[:200]
+
+
 @app.entrypoint
 async def invoke(payload: dict[str, Any]):
     """
@@ -1216,7 +1254,73 @@ async def invoke(payload: dict[str, Any]):
                     )
                 },
             )
-            stream = agent.stream_async(user_message)
+            # ✅ 构建用户消息（支持多模态：文本 + 图片 + 文档）
+            images_data = payload.get("images")
+            files_data = payload.get("files")
+            has_images = images_data and len(images_data) > 0
+            has_files = files_data and len(files_data) > 0
+
+            if has_images or has_files:
+                import base64
+                user_content = [{"text": user_message}]
+
+                # 追加图片 content blocks
+                if has_images:
+                    for img in images_data:
+                        try:
+                            mime_type = img.get("mime_type", "image/jpeg")
+                            b64_data = img.get("base64_data", "")
+                            img_bytes = base64.b64decode(b64_data)
+                            user_content.append({
+                                "image": {
+                                    "format": mime_type.split("/")[-1],
+                                    "source": {
+                                        "bytes": img_bytes,
+                                    },
+                                }
+                            })
+                        except Exception as e:
+                            logger.warning(
+                                "⚠️ 图片附件处理失败，跳过该图片",
+                                extra={"file_name": img.get("file_name"), "error": str(e)},
+                            )
+
+                # 追加文档 content blocks（Excel 等）
+                if has_files:
+                    for file_item in files_data:
+                        try:
+                            mime_type = file_item.get("mime_type", "application/octet-stream")
+                            doc_format = _mime_to_document_format(mime_type)
+                            doc_name = _sanitize_document_name(file_item.get("file_name", "document"))
+                            b64_data = file_item.get("base64_data", "")
+                            user_content.append({
+                                "document": {
+                                    "format": doc_format,
+                                    "name": doc_name,
+                                    "source": {
+                                        "bytes": base64.b64decode(b64_data),
+                                    },
+                                }
+                            })
+                        except Exception as e:
+                            logger.warning(
+                                "⚠️ 文档附件处理失败，跳过该文件",
+                                extra={"file_name": file_item.get("file_name"), "error": str(e)},
+                            )
+
+                logger.info(
+                    "📎 多模态消息构建完成",
+                    extra={
+                        "text_length": len(user_message),
+                        "image_count": len(images_data) if has_images else 0,
+                        "file_count": len(files_data) if has_files else 0,
+                        "image_types": [img.get("mime_type") for img in images_data] if has_images else [],
+                        "file_types": [f.get("mime_type") for f in files_data] if has_files else [],
+                    },
+                )
+                stream = agent.stream_async(user_content)
+            else:
+                stream = agent.stream_async(user_message)
             logger.info("Agent stream started")
             async for event in stream:
                 event_count += 1
