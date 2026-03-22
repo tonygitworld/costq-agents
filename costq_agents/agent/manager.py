@@ -136,9 +136,18 @@ class AgentManager:
         # Prompt Caching配置
         cache_config: dict[str, Any] = {}
         if settings.BEDROCK_ENABLE_PROMPT_CACHING:
+            from strands.models.model import CacheConfig
+
             cache_config = {
+                # system prompt 缓存（cache_prompt 虽已 deprecated，但 cache_config
+                # 的 auto 策略只处理 messages，不会自动给 system 加 cachePoint）
                 "cache_prompt": settings.BEDROCK_CACHE_PROMPT,
+                # 工具定义缓存
                 "cache_tools": settings.BEDROCK_CACHE_TOOLS,
+                # ✅ 启用 messages 自动缓存（历史对话 + tool results）
+                # SDK 会在最后一条 user message 末尾注入 cachePoint，
+                # 使上一轮的 tool result 在下一轮享受 0.1x cache read
+                "cache_config": CacheConfig(strategy="auto"),
             }
             if not IS_PRODUCTION:
                 logger.info(f"✅ Bedrock Prompt Caching已启用: {cache_config}")
@@ -378,10 +387,11 @@ class AgentManager:
                 AgentCoreMemoryConfig,
                 RetrievalConfig,
             )
-            from bedrock_agentcore.memory.integrations.strands.session_manager import (
-                AgentCoreMemorySessionManager,
-            )
             from strands.agent.conversation_manager import SlidingWindowConversationManager
+
+            from costq_agents.agent.filtered_session_manager import (
+                FilteredMemorySessionManager,
+            )
         except ImportError as e:
             logger.error("无法导入bedrock_agentcore模块", extra={"error": str(e)})
             raise
@@ -445,18 +455,19 @@ class AgentManager:
 
         # ✅ P0修复：添加异常处理，防止Memory初始化失败导致容器崩溃
         try:
-            session_manager = AgentCoreMemorySessionManager(
+            session_manager = FilteredMemorySessionManager(
                 agentcore_memory_config=agentcore_memory_config,
                 region_name=settings.AWS_REGION,
             )
 
             has_retrieval = agentcore_memory_config.retrieval_config is not None
             logger.info(
-                "✅ AgentCoreMemorySessionManager 创建成功",
+                "✅ FilteredMemorySessionManager 创建成功",
                 extra={
                     "long_term_memory_enabled": has_retrieval,
                     "user_preferences_top_k": 5,
                     "semantic_memories_top_k": 3,
+                    "tool_result_filtering": True,
                 }
             )
 
