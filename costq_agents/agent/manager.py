@@ -136,9 +136,18 @@ class AgentManager:
         # Prompt Caching配置
         cache_config: dict[str, Any] = {}
         if settings.BEDROCK_ENABLE_PROMPT_CACHING:
+            from strands.models.model import CacheConfig
+
             cache_config = {
+                # system prompt 缓存（cache_prompt 虽已 deprecated，但 cache_config
+                # 的 auto 策略只处理 messages，不会自动给 system 加 cachePoint）
                 "cache_prompt": settings.BEDROCK_CACHE_PROMPT,
+                # 工具定义缓存
                 "cache_tools": settings.BEDROCK_CACHE_TOOLS,
+                # ✅ 启用 messages 自动缓存（历史对话 + tool results）
+                # SDK 会在最后一条 user message 末尾注入 cachePoint，
+                # 使上一轮的 tool result 在下一轮享受 0.1x cache read
+                "cache_config": CacheConfig(strategy="auto"),
             }
             if not IS_PRODUCTION:
                 logger.info(f"✅ Bedrock Prompt Caching已启用: {cache_config}")
