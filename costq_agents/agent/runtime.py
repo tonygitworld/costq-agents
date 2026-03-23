@@ -24,11 +24,15 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # ========== 第三方库导入 ==========
 from bedrock_agentcore import BedrockAgentCoreApp
 from opentelemetry import baggage, context, trace
+
+# ========== 类型检查导入 ==========
+if TYPE_CHECKING:
+    from strands import Agent
 
 # ========== 本地模块导入 ==========
 # 添加项目根目录到 Python 路径
@@ -125,6 +129,68 @@ _get_or_create_memory_client()
 app = BedrockAgentCoreApp(debug=True)
 mcp_manager = None
 agent_manager = None
+
+# ========== Agent/MCP 缓存（跨 invocation 复用）==========
+# 利用 microVM 进程持久性，缓存 Agent 和 MCP 连接以消除重复初始化开销
+_agent: Agent | None = None  # 缓存的 Strands Agent 实例
+_clients_dict: dict[str, Any] | None = None  # 缓存的 MCP 客户端字典
+_tools: list | None = None  # 缓存的工具列表
+_current_model_id: str | None = None  # 当前缓存 Agent 对应的 model_id
+_current_prompt_type: str | None = None  # 当前缓存 Agent 对应的 prompt_type
+_current_account_type: str | None = None  # 当前缓存 MCP/Agent 对应的 account_type
+
+
+def _clear_all_cache(reason: str) -> None:
+    """清空所有全局缓存变量（异常降级时调用）
+
+    Args:
+        reason: 清空原因，用于结构化日志
+    """
+    global _agent, _clients_dict, _tools
+    global _current_model_id, _current_prompt_type, _current_account_type
+    logger.warning(
+        "🧹 清空全局缓存",
+        extra={
+            "reason": reason,
+            "cleared_vars": [
+                "_agent",
+                "_clients_dict",
+                "_tools",
+                "_current_model_id",
+                "_current_prompt_type",
+                "_current_account_type",
+            ],
+        },
+    )
+    _agent = None
+    _clients_dict = None
+    _tools = None
+    _current_model_id = None
+    _current_prompt_type = None
+    _current_account_type = None
+
+
+def _clear_mcp_cache(reason: str) -> None:
+    """清空 MCP 相关缓存变量
+
+    Args:
+        reason: 清空原因，用于结构化日志
+    """
+    global _clients_dict, _tools, _current_account_type
+    logger.warning(
+        "🧹 清空 MCP 缓存",
+        extra={
+            "reason": reason,
+            "cleared_vars": [
+                "_clients_dict",
+                "_tools",
+                "_current_account_type",
+            ],
+        },
+    )
+    _clients_dict = None
+    _tools = None
+    _current_account_type = None
 
 
 def get_or_create_managers():
@@ -243,9 +309,7 @@ def filter_event(event: dict) -> dict:
         try:
             original_size = len(json.dumps(event, ensure_ascii=False, default=str))
             filtered_size = len(json.dumps(filtered, ensure_ascii=False, default=str))
-            reduction_ratio = (
-                (1 - filtered_size / original_size) * 100 if original_size > 0 else 0
-            )
+            reduction_ratio = (1 - filtered_size / original_size) * 100 if original_size > 0 else 0
             opt_ratio = round(original_size / filtered_size, 1) if filtered_size else 0
             logger.info(
                 f"✅ Event filtering initialized - original: {original_size}B, "
@@ -259,6 +323,7 @@ def filter_event(event: dict) -> dict:
 
 
 # ========== 文档附件辅助函数 ==========
+
 
 def _mime_to_document_format(mime_type: str) -> str:
     """将 MIME 类型映射为 Bedrock Converse API document format
@@ -281,16 +346,19 @@ def _mime_to_document_format(mime_type: str) -> str:
     }
     result = mapping.get(mime_type)
     if result is None:
-        raise ValueError(f"不支持的文档 MIME 类型: {mime_type}，Bedrock 支持: {list(mapping.values())}")
+        raise ValueError(
+            f"不支持的文档 MIME 类型: {mime_type}，Bedrock 支持: {list(mapping.values())}"
+        )
     return result
 
 
 def _sanitize_document_name(file_name: str) -> str:
     """清洗文件名以符合 Bedrock API 要求：仅 [a-zA-Z0-9_-]，最长 200 字符"""
     import re
+
     name = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
     name = name.replace(" ", "_")
-    name = re.sub(r'[^a-zA-Z0-9_-]', '', name)
+    name = re.sub(r"[^a-zA-Z0-9_-]", "", name)
     if not name:
         name = "document"
     return name[:200]
@@ -345,7 +413,7 @@ async def invoke(payload: dict[str, Any]):
         ...     "prompt_type": "alert",  # ✅ 关键参数
         ... }
         >>> # 告警场景不需要 session_id、user_id
-        
+
         >>> # 使用自定义模型
         >>> payload = {
         ...     "prompt": "查询成本",
@@ -415,11 +483,11 @@ async def invoke(payload: dict[str, Any]):
         session_id = payload.get("session_id")
         user_id = payload.get("user_id")
         org_id = payload.get("org_id")
-        
+
         # ✅ 从 payload 提取 model_id，如不提供则使用默认模型
         model_id = payload.get("model_id") or settings.BEDROCK_MODEL_ID
         logger.info("Model ID determined", extra={"model_id": model_id})
-        
+
         step1_duration = time.time() - step1_start
         logger.debug(
             "⏱️ Step 1: Payload解析完成",
@@ -738,7 +806,7 @@ async def invoke(payload: dict[str, Any]):
             "auth_type": auth_type,
             "org_id": str(org_id),
             "region": region,
-            "env_isolation_enabled": True  # ✅ 标记：使用环境变量隔离
+            "env_isolation_enabled": True,  # ✅ 标记：使用环境变量隔离
         },
     )
     if auth_type == "iam_role":
@@ -840,10 +908,7 @@ async def invoke(payload: dict[str, Any]):
             yield {"error": error_msg}
             return
     if account_type == "gcp":
-        logger.info(
-            "✅ GCP 凭证已准备（隔离字典，不污染主进程）",
-            extra={"env_isolation": True}
-        )
+        logger.info("✅ GCP 凭证已准备（隔离字典，不污染主进程）", extra={"env_isolation": True})
     else:
         # ✅ AWS 区域信息也存储到隔离字典
         additional_env["AWS_REGION"] = region
@@ -858,193 +923,270 @@ async def invoke(payload: dict[str, Any]):
             extra={
                 "auth_type": auth_type,
                 "env_isolation": True,
-                "env_vars_count": len(additional_env)
-            }
+                "env_vars_count": len(additional_env),
+            },
         )
     credentials_duration = time.time() - credentials_start
     logger.info(
         "⏱️ Step 3-5: AWS凭证获取完成",
         extra={"auth_type": auth_type, "duration_seconds": round(credentials_duration, 3)},
     )
-    clients_dict = None
+    # ========== Step 6: MCP 客户端条件创建（缓存复用）==========
+    global _clients_dict, _tools, _current_account_type
+
+    need_rebuild_mcp = _clients_dict is None or _current_account_type != account_type
+
     with tracer.start_as_current_span("costq_agents.mcp.initialize") as mcp_span:
         try:
             mcp_start_time = time.time()
-            logger.info("创建 MCP 客户端...")
-
-            if account_type == "gcp":
-                available_mcps = []  # GCP 仅使用 Gateway MCP，不加载 Local MCP
-                logger.info("GCP场景：仅使用 Gateway MCP，不加载 Local MCP")
-            else:
-                available_mcps = settings.AWS_MCP_SERVERS
-                logger.info(f"AWS场景：{len(available_mcps)}个 Local MCP")
             mcp_span.set_attribute("costq_agents.mcp.account_type", account_type)
-            mcp_span.set_attribute("costq_agents.mcp.servers_requested", len(available_mcps))
-            logger.info(
-                "Step 6: Creating MCP clients (with env isolation)",
-                extra={
-                    "available_mcps": available_mcps,
-                    "mcp_count": len(available_mcps),
-                    "env_isolation_enabled": True,  # ✅ 标记：环境变量隔离
-                    "additional_env_count": len(additional_env)
-                },
-            )
-            # ✅ 传递隔离的环境变量给 MCP Clients（不污染主进程）
-            clients_dict = mcp_mgr.create_all_clients(
-                server_types=available_mcps,
-                additional_env=additional_env  # ✅ 关键：隔离传递
-            )
-            mcp_elapsed = time.time() - mcp_start_time
-            mcp_span.set_attribute("costq_agents.mcp.clients_created", len(clients_dict))
-            mcp_span.set_attribute("costq_agents.mcp.elapsed_seconds", round(mcp_elapsed, 2))
 
-            # ✅ 验证主进程环境变量没有被污染（使用专用验证函数）
-            from costq_agents.utils.env_isolation_validator import verify_env_isolation
-
-            isolation_ok = verify_env_isolation(phase="after_mcp_creation")
-            if not isolation_ok:
-                logger.error(
-                    "🚨 严重：环境变量隔离失败！",
-                    extra={
-                        "phase": "after_mcp_creation",
-                        "impact": "OpenTelemetry/Bedrock/Memory 可能使用了错误的凭证"
-                    }
-                )
-
-            logger.info(
-                "MCP clients created (env isolation verified)",
-                extra={
-                    "success_count": len(clients_dict),
-                    "requested_count": len(available_mcps),
-                    "created_types": list(clients_dict.keys()),
-                    "elapsed_seconds": round(mcp_elapsed, 2),
-                    "env_isolation_verified": isolation_ok,  # ✅ 使用验证函数的结果
-                },
-            )
-            tools = []
-            tool_details = {}
-
-            # ========== 1. 收集本地 MCP 工具（stdio 模式）==========
-            for server_type, client in clients_dict.items():
-                try:
-                    logger.info(f"Getting tools from {server_type}")
-                    server_tools = client.list_tools_sync()
-                    tools.extend(server_tools)
-                    tool_details[server_type] = len(server_tools)
+            if need_rebuild_mcp:
+                # 关闭旧连接（account_type 切换时）
+                previous_account_type = _current_account_type
+                if _clients_dict is not None:
                     logger.info(
-                        f"✅ Tools from {server_type}", extra={"tool_count": len(server_tools)}
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"❌ Failed to load tools from {server_type}",
+                        "关闭旧 MCP 连接（account_type 切换）",
                         extra={
-                            "server_type": server_type,
-                            "error_type": type(e).__name__,
-                            "error": str(e),
+                            "previous_account_type": previous_account_type,
+                            "new_account_type": account_type,
                         },
                     )
-                    tool_details[server_type] = 0
+                    mcp_mgr.close_all_clients(_clients_dict)
 
-            local_tools_count = len(tools)
-            logger.info(
-                "Local MCP tools loaded",
-                extra={"local_tools_count": local_tools_count, "tools_per_mcp": tool_details}
-            )
+                logger.info("创建 MCP 客户端...")
 
-            # ========== 2. 收集 Gateway MCP 工具（HTTP + SigV4 模式）==========
-            if account_type == "aws":
-                gateway_url = settings.COSTQ_AWS_MCP_SERVERS_GATEWAY_URL
-                if gateway_url:
+                if account_type == "gcp":
+                    available_mcps = []
+                    logger.info("GCP场景：仅使用 Gateway MCP，不加载 Local MCP")
+                else:
+                    available_mcps = settings.AWS_MCP_SERVERS
+                    logger.info(f"AWS场景：{len(available_mcps)}个 Local MCP")
+
+                mcp_span.set_attribute("costq_agents.mcp.servers_requested", len(available_mcps))
+                logger.info(
+                    "Step 6: Creating MCP clients (with env isolation)",
+                    extra={
+                        "available_mcps": available_mcps,
+                        "mcp_count": len(available_mcps),
+                        "env_isolation_enabled": True,
+                        "additional_env_count": len(additional_env),
+                    },
+                )
+                # ✅ 传递隔离的环境变量给 MCP Clients
+                new_clients_dict = mcp_mgr.create_all_clients(
+                    server_types=available_mcps,
+                    additional_env=additional_env,
+                )
+                mcp_elapsed = time.time() - mcp_start_time
+                mcp_span.set_attribute("costq_agents.mcp.clients_created", len(new_clients_dict))
+                mcp_span.set_attribute("costq_agents.mcp.elapsed_seconds", round(mcp_elapsed, 2))
+
+                # ✅ 验证主进程环境变量没有被污染
+                from costq_agents.utils.env_isolation_validator import (
+                    verify_env_isolation,
+                )
+
+                isolation_ok = verify_env_isolation(phase="after_mcp_creation")
+                if not isolation_ok:
+                    logger.error(
+                        "🚨 严重：环境变量隔离失败！",
+                        extra={
+                            "phase": "after_mcp_creation",
+                            "impact": "OpenTelemetry/Bedrock/Memory 可能使用了错误的凭证",
+                        },
+                    )
+
+                logger.info(
+                    "MCP clients created (env isolation verified)",
+                    extra={
+                        "success_count": len(new_clients_dict),
+                        "requested_count": len(available_mcps),
+                        "created_types": list(new_clients_dict.keys()),
+                        "elapsed_seconds": round(mcp_elapsed, 2),
+                        "env_isolation_verified": isolation_ok,
+                    },
+                )
+
+                # 收集工具列表
+                new_tools: list = []
+                tool_details: dict = {}
+
+                # 1. 收集本地 MCP 工具（stdio 模式）
+                for server_type, client in new_clients_dict.items():
                     try:
+                        logger.info(f"Getting tools from {server_type}")
+                        server_tools = client.list_tools_sync()
+                        new_tools.extend(server_tools)
+                        tool_details[server_type] = len(server_tools)
                         logger.info(
-                            "Step 6.1: Creating AWS Gateway MCP client (SigV4)",
-                            extra={
-                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
-                            }
+                            f"✅ Tools from {server_type}",
+                            extra={"tool_count": len(server_tools)},
                         )
-                        gateway_client = mcp_mgr.create_gateway_client(name="gateway-mcp")
-                        gateway_client.__enter__()  # 激活连接
-
-                        # 获取完整工具列表（处理分页）
-                        gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
-                        tools.extend(gateway_tools)
-                        tool_details["gateway"] = len(gateway_tools)
-
-                        logger.info(
-                            "✅ Gateway MCP tools loaded (dynamically)",
-                            extra={
-                                "gateway_tools_count": len(gateway_tools),
-                            }
-                        )
-
-                        # 注意：gateway_client 需要在 Agent 使用完毕后关闭
-                        # 这里先保存引用，后续在清理阶段处理
-                        clients_dict["gateway"] = gateway_client
-
                     except Exception as e:
                         logger.error(
-                            "❌ Failed to load AWS Gateway MCP tools",
+                            f"❌ Failed to load tools from {server_type}",
                             extra={
+                                "server_type": server_type,
                                 "error_type": type(e).__name__,
                                 "error": str(e),
-                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
                             },
                         )
-                        tool_details["gateway"] = 0
-                else:
-                    logger.info("AWS Gateway MCP 未配置（COSTQ_AWS_MCP_SERVERS_GATEWAY_URL 未设置），跳过")
-            elif account_type == "gcp":
-                gateway_url = settings.COSTQ_GCP_MCP_SERVERS_GATEWAY_URL
-                if gateway_url:
-                    try:
+                        tool_details[server_type] = 0
+
+                local_tools_count = len(new_tools)
+                logger.info(
+                    "Local MCP tools loaded",
+                    extra={
+                        "local_tools_count": local_tools_count,
+                        "tools_per_mcp": tool_details,
+                    },
+                )
+
+                # 2. 收集 Gateway MCP 工具（HTTP + SigV4 模式）
+                if account_type == "aws":
+                    gateway_url = settings.COSTQ_AWS_MCP_SERVERS_GATEWAY_URL
+                    if gateway_url:
+                        try:
+                            logger.info(
+                                "Step 6.1: Creating AWS Gateway MCP client (SigV4)",
+                                extra={
+                                    "gateway_url": (
+                                        gateway_url[:50] + "..."
+                                        if len(gateway_url) > 50
+                                        else gateway_url
+                                    ),
+                                },
+                            )
+                            gateway_client = mcp_mgr.create_gateway_client(name="gateway-mcp")
+                            gateway_client.__enter__()
+                            gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
+                            new_tools.extend(gateway_tools)
+                            tool_details["gateway"] = len(gateway_tools)
+                            logger.info(
+                                "✅ Gateway MCP tools loaded (dynamically)",
+                                extra={
+                                    "gateway_tools_count": len(gateway_tools),
+                                },
+                            )
+                            new_clients_dict["gateway"] = gateway_client
+                        except Exception as e:
+                            logger.error(
+                                "❌ Failed to load AWS Gateway MCP tools",
+                                extra={
+                                    "error_type": type(e).__name__,
+                                    "error": str(e),
+                                    "gateway_url": (
+                                        gateway_url[:50] + "..."
+                                        if len(gateway_url) > 50
+                                        else gateway_url
+                                    ),
+                                },
+                            )
+                            tool_details["gateway"] = 0
+                    else:
                         logger.info(
-                            "Step 6.1: Creating GCP Gateway MCP client (SigV4)",
-                            extra={
-                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
-                            }
+                            "AWS Gateway MCP 未配置"
+                            "（COSTQ_AWS_MCP_SERVERS_GATEWAY_URL 未设置），跳过"
                         )
-                        gateway_client = mcp_mgr.create_gcp_gateway_client(name="gcp-gateway-mcp")
-                        gateway_client.__enter__()
-
-                        gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
-                        tools.extend(gateway_tools)
-                        tool_details["gateway-gcp"] = len(gateway_tools)
-
+                elif account_type == "gcp":
+                    gateway_url = settings.COSTQ_GCP_MCP_SERVERS_GATEWAY_URL
+                    if gateway_url:
+                        try:
+                            logger.info(
+                                "Step 6.1: Creating GCP Gateway MCP client (SigV4)",
+                                extra={
+                                    "gateway_url": (
+                                        gateway_url[:50] + "..."
+                                        if len(gateway_url) > 50
+                                        else gateway_url
+                                    ),
+                                },
+                            )
+                            gateway_client = mcp_mgr.create_gcp_gateway_client(
+                                name="gcp-gateway-mcp"
+                            )
+                            gateway_client.__enter__()
+                            gateway_tools = mcp_mgr.get_full_tools_list(gateway_client)
+                            new_tools.extend(gateway_tools)
+                            tool_details["gateway-gcp"] = len(gateway_tools)
+                            logger.info(
+                                "✅ GCP Gateway MCP tools loaded (dynamically)",
+                                extra={
+                                    "gateway_tools_count": len(gateway_tools),
+                                },
+                            )
+                            new_clients_dict["gateway-gcp"] = gateway_client
+                        except Exception as e:
+                            logger.error(
+                                "❌ Failed to load GCP Gateway MCP tools",
+                                extra={
+                                    "error_type": type(e).__name__,
+                                    "error": str(e),
+                                    "gateway_url": (
+                                        gateway_url[:50] + "..."
+                                        if len(gateway_url) > 50
+                                        else gateway_url
+                                    ),
+                                },
+                            )
+                            tool_details["gateway-gcp"] = 0
+                    else:
                         logger.info(
-                            "✅ GCP Gateway MCP tools loaded (dynamically)",
-                            extra={
-                                "gateway_tools_count": len(gateway_tools),
-                            }
+                            "GCP Gateway MCP 未配置"
+                            "（COSTQ_GCP_MCP_SERVERS_GATEWAY_URL 未设置），跳过"
                         )
 
-                        clients_dict["gateway-gcp"] = gateway_client
+                # 更新全局缓存
+                _clients_dict = new_clients_dict
+                _tools = new_tools
+                _current_account_type = account_type
 
-                    except Exception as e:
-                        logger.error(
-                            "❌ Failed to load GCP Gateway MCP tools",
-                            extra={
-                                "error_type": type(e).__name__,
-                                "error": str(e),
-                                "gateway_url": gateway_url[:50] + "..." if len(gateway_url) > 50 else gateway_url,
-                            },
-                        )
-                        tool_details["gateway-gcp"] = 0
+                # 确定重建原因
+                if previous_account_type is None:
+                    rebuild_reason = "first_invocation"
                 else:
-                    logger.info("GCP Gateway MCP 未配置（COSTQ_GCP_MCP_SERVERS_GATEWAY_URL 未设置），跳过")
+                    rebuild_reason = "account_type_changed"
 
-            mcp_span.set_attribute("costq_agents.mcp.total_tools", len(tools))
-            mcp_span.set_attribute("costq_agents.mcp.local_tools", local_tools_count)
-            mcp_span.set_attribute("costq_agents.mcp.gateway_tools", len(tools) - local_tools_count)
-            logger.info(
-                "All tools loaded (local + gateway)",
-                extra={
-                    "total_tools": len(tools),
-                    "local_tools": local_tools_count,
-                    "gateway_tools": len(tools) - local_tools_count,
-                    "tools_per_mcp": tool_details
-                }
-            )
+                mcp_span.set_attribute("costq_agents.mcp.total_tools", len(new_tools))
+                mcp_span.set_attribute("costq_agents.mcp.local_tools", local_tools_count)
+                mcp_span.set_attribute(
+                    "costq_agents.mcp.gateway_tools",
+                    len(new_tools) - local_tools_count,
+                )
+                logger.info(
+                    "MCP 缓存已更新",
+                    extra={
+                        "mcp_reused": False,
+                        "rebuild_reason": rebuild_reason,
+                        "previous_account_type": previous_account_type,
+                        "account_type": account_type,
+                        "total_tools": len(new_tools),
+                        "local_tools": local_tools_count,
+                        "gateway_tools": len(new_tools) - local_tools_count,
+                        "tools_per_mcp": tool_details,
+                    },
+                )
+            else:
+                # ✅ 复用缓存的 MCP 客户端和工具列表
+                mcp_elapsed = time.time() - mcp_start_time
+                logger.info(
+                    "MCP 缓存命中，复用已有连接",
+                    extra={
+                        "mcp_reused": True,
+                        "account_type": account_type,
+                        "cached_mcp_count": len(_clients_dict),
+                        "cached_tools_count": len(_tools) if _tools else 0,
+                        "elapsed_seconds": round(mcp_elapsed, 2),
+                    },
+                )
+
+            # 使用缓存值（无论是新建还是复用）
+            clients_dict = _clients_dict
+            tools = _tools
+
         except Exception as e:
+            _clear_mcp_cache(reason=f"mcp_creation_error: {type(e).__name__}: {str(e)}")
             logger.error(f"创建 MCP 客户端失败: {e}")
             import traceback
 
@@ -1061,153 +1203,213 @@ async def invoke(payload: dict[str, Any]):
         extra={
             "auth_type": auth_type,
             "env_isolation_verified": "AWS_ACCESS_KEY_ID" not in os.environ,
-            "benefit": "OpenTelemetry/Bedrock/Memory 继续使用 Runtime IAM Role（不受查询账号影响）"
-        }
+            "benefit": "OpenTelemetry/Bedrock/Memory 继续使用 Runtime IAM Role（不受查询账号影响）",
+        },
     )
+    # ========== Step 7: Agent 条件创建（缓存复用）==========
+    global _agent, _current_model_id, _current_prompt_type
+
+    need_rebuild_agent = (
+        _agent is None
+        or _current_model_id != model_id
+        or _current_prompt_type != prompt_type
+        or _current_account_type != account_type
+    )
+
     step7_start_time = time.time()
     try:
-        logger.info(
-            "⏱️ SPAN START: Step 7 - Agent创建",
-            extra={
-                "tool_count": len(tools),
-                "prompt_type": prompt_type,
-                "has_session_id": session_id is not None,
-                "has_org_id": org_id is not None,
-            },
-        )
-        memory_client = None
-        memory_id = None
-        
-        # ✅ 始终使用前端传过来的 model_id 创建 AgentManager
-        dialog_agent_manager = AgentManager(
-            system_prompt=dialog_system_prompt, model_id=model_id
-        )
-        logger.info(
-            "AgentManager 已创建",
-            extra={"model_id": model_id},
-        )
-        
-        if prompt_type == "dialog" and account_type == "gcp":
-            gcp_prompt = AgentManager.load_bedrock_prompt(settings.DIALOG_GCP_PROMPT_ARN)
-            logger.info(f"✅ GCP 对话提示词加载完成 - 长度: {len(gcp_prompt)} 字符")
-            dialog_agent_manager = AgentManager(
-                system_prompt=gcp_prompt, model_id=model_id
-            )
-        if prompt_type == "alert":
-            logger.info("创建告警 Agent（使用告警提示词，无 Memory）")
-            alert_prompt = AgentManager.load_bedrock_prompt(settings.ALERT_PROMPT_ARN)
-            alert_agent_manager = AgentManager(
-                system_prompt=alert_prompt, model_id=model_id
-            )
-            agent = alert_agent_manager.create_agent_with_memory(tools=tools)
+        if need_rebuild_agent:
+            # 确定重建原因
+            if _agent is None:
+                agent_rebuild_reason = "first_invocation"
+            else:
+                changed = []
+                if _current_model_id != model_id:
+                    changed.append("model_id")
+                if _current_prompt_type != prompt_type:
+                    changed.append("prompt_type")
+                if _current_account_type != account_type:
+                    changed.append("account_type")
+                agent_rebuild_reason = "params_changed: " + ",".join(changed)
+            previous_model_id = _current_model_id
+            previous_prompt_type = _current_prompt_type
+
             logger.info(
-                "Agent 创建完成（告警场景）", extra={"has_memory": False, "tool_count": len(tools)}
+                "⏱️ SPAN START: Step 7 - Agent创建（重建）",
+                extra={
+                    "tool_count": len(tools),
+                    "prompt_type": prompt_type,
+                    "has_session_id": session_id is not None,
+                    "has_org_id": org_id is not None,
+                    "rebuild_reason": agent_rebuild_reason,
+                },
+            )
+            memory_client = None
+            memory_id = None
+
+            # 使用前端传过来的 model_id 创建 AgentManager
+            dialog_agent_manager = AgentManager(
+                system_prompt=dialog_system_prompt, model_id=model_id
+            )
+            logger.info(
+                "AgentManager 已创建",
+                extra={"model_id": model_id},
+            )
+
+            if prompt_type == "dialog" and account_type == "gcp":
+                gcp_prompt = AgentManager.load_bedrock_prompt(settings.DIALOG_GCP_PROMPT_ARN)
+                logger.info("✅ GCP 对话提示词加载完成" f" - 长度: {len(gcp_prompt)} 字符")
+                dialog_agent_manager = AgentManager(system_prompt=gcp_prompt, model_id=model_id)
+            if prompt_type == "alert":
+                logger.info("创建告警 Agent（使用告警提示词，无 Memory）")
+                alert_prompt = AgentManager.load_bedrock_prompt(settings.ALERT_PROMPT_ARN)
+                alert_agent_manager = AgentManager(system_prompt=alert_prompt, model_id=model_id)
+                agent = alert_agent_manager.create_agent_with_memory(tools=tools)
+                logger.info(
+                    "Agent 创建完成（告警场景）",
+                    extra={
+                        "has_memory": False,
+                        "tool_count": len(tools),
+                    },
+                )
+            else:
+                logger.info("创建对话 Agent（尝试Memory模式）")
+                agent_created = False
+                memory_fallback_reason = None
+                executor = None
+                try:
+                    memory_init_start = time.time()
+                    memory_client, memory_id = _get_or_create_memory_client()
+                    memory_init_duration = time.time() - memory_init_start
+                    logger.info(
+                        "⏱️ Memory客户端初始化完成",
+                        extra={
+                            "memory_id": memory_id,
+                            "duration_seconds": round(memory_init_duration, 2),
+                        },
+                    )
+                    import asyncio
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    agent_create_start = time.time()
+
+                    async def create_with_timeout():
+                        loop = asyncio.get_event_loop()
+                        return await loop.run_in_executor(
+                            executor,
+                            dialog_agent_manager.create_agent_with_memory,
+                            tools,
+                            memory_client,
+                            memory_id,
+                            user_id,
+                            session_id,
+                            40,
+                        )
+
+                    agent = await asyncio.wait_for(create_with_timeout(), timeout=30.0)
+                    if dialog_agent_manager is not agent_mgr:
+                        logger.info("✅ 已使用 GCP 对话提示词创建 Agent")
+                    agent_create_duration = time.time() - agent_create_start
+                    if agent is None:
+                        raise ValueError("Agent创建返回None")
+                    if not hasattr(agent, "stream_async"):
+                        raise ValueError("Agent对象缺少stream_async方法")
+                    agent_created = True
+                    logger.info(
+                        "⏱️ Agent创建完成（对话场景，Memory模式）",
+                        extra={
+                            "has_memory": True,
+                            "session_id": str(session_id),
+                            "user_id": str(user_id),
+                            "tool_count": len(tools),
+                            "duration_seconds": round(agent_create_duration, 2),
+                        },
+                    )
+                except TimeoutError:
+                    memory_fallback_reason = "Memory初始化超时（30秒）"
+                    logger.warning(
+                        memory_fallback_reason,
+                        extra={
+                            "session_id": str(session_id),
+                            "user_id": str(user_id),
+                        },
+                    )
+                except Exception as memory_error:
+                    memory_fallback_reason = f"Memory初始化失败: {str(memory_error)}"
+                    logger.warning(
+                        "Memory初始化失败，回退到无Memory模式",
+                        extra={
+                            "error_type": type(memory_error).__name__,
+                            "error_message": str(memory_error),
+                            "session_id": str(session_id),
+                        },
+                    )
+                finally:
+                    if executor is not None:
+                        executor.shutdown(wait=False)
+                        logger.debug("ThreadPoolExecutor已关闭")
+                if not agent_created:
+                    try:
+                        logger.info("使用无Memory模式创建Agent（回退）")
+                        agent = dialog_agent_manager.create_agent_with_memory(tools=tools)
+                        if agent is None:
+                            raise ValueError("Agent创建返回None（无Memory模式）")
+                        if not hasattr(agent, "stream_async"):
+                            raise ValueError("Agent对象缺少stream_async方法" "（无Memory模式）")
+                        logger.info(
+                            "Agent 创建完成" "（对话场景，无Memory模式 - 回退）",
+                            extra={
+                                "has_memory": False,
+                                "tool_count": len(tools),
+                                "fallback_reason": (memory_fallback_reason),
+                            },
+                        )
+                    except Exception as fallback_error:
+                        error_msg = "Agent创建完全失败（包括回退）: " f"{str(fallback_error)}"
+                        logger.error(
+                            error_msg,
+                            extra={
+                                "original_error": (memory_fallback_reason),
+                                "fallback_error": str(fallback_error),
+                            },
+                        )
+                        raise ValueError(error_msg)
+
+            # 更新 Agent 缓存
+            _agent = agent
+            _current_model_id = model_id
+            _current_prompt_type = prompt_type
+
+            step7_duration = time.time() - step7_start_time
+            logger.info(
+                "⏱️ SPAN END: Step 7 - Agent创建完成",
+                extra={
+                    "total_duration_seconds": round(step7_duration, 2),
+                    "agent_reused": False,
+                    "rebuild_reason": agent_rebuild_reason,
+                    "previous_model_id": previous_model_id,
+                    "previous_prompt_type": previous_prompt_type,
+                    "model_id": model_id,
+                    "prompt_type": prompt_type,
+                    "account_type": account_type,
+                },
             )
         else:
-            logger.info("创建对话 Agent（尝试Memory模式）")
-            agent_created = False
-            memory_fallback_reason = None
-            executor = None
-            try:
-                memory_init_start = time.time()
-                memory_client, memory_id = _get_or_create_memory_client()
-                memory_init_duration = time.time() - memory_init_start
-                logger.info(
-                    "⏱️ Memory客户端初始化完成",
-                    extra={
-                        "memory_id": memory_id,
-                        "duration_seconds": round(memory_init_duration, 2),
-                    },
-                )
-                import asyncio
-                from concurrent.futures import ThreadPoolExecutor
-
-                executor = ThreadPoolExecutor(max_workers=1)
-                agent_create_start = time.time()
-
-                async def create_with_timeout():
-                    loop = asyncio.get_event_loop()
-                    return await loop.run_in_executor(
-                        executor,
-                        dialog_agent_manager.create_agent_with_memory,
-                        tools,
-                        memory_client,
-                        memory_id,
-                        user_id,
-                        session_id,
-                        40,
-                    )
-
-                agent = await asyncio.wait_for(create_with_timeout(), timeout=30.0)
-                if dialog_agent_manager is not agent_mgr:
-                    logger.info("✅ 已使用 GCP 对话提示词创建 Agent")
-                agent_create_duration = time.time() - agent_create_start
-                if agent is None:
-                    raise ValueError("Agent创建返回None")
-                if not hasattr(agent, "stream_async"):
-                    raise ValueError("Agent对象缺少stream_async方法")
-                agent_created = True
-                logger.info(
-                    "⏱️ Agent创建完成（对话场景，Memory模式）",
-                    extra={
-                        "has_memory": True,
-                        "session_id": str(session_id),
-                        "user_id": str(user_id),
-                        "tool_count": len(tools),
-                        "duration_seconds": round(agent_create_duration, 2),
-                    },
-                )
-            except TimeoutError:
-                memory_fallback_reason = "Memory初始化超时（30秒）"
-                logger.warning(
-                    memory_fallback_reason,
-                    extra={"session_id": str(session_id), "user_id": str(user_id)},
-                )
-            except Exception as memory_error:
-                memory_fallback_reason = f"Memory初始化失败: {str(memory_error)}"
-                logger.warning(
-                    "Memory初始化失败，回退到无Memory模式",
-                    extra={
-                        "error_type": type(memory_error).__name__,
-                        "error_message": str(memory_error),
-                        "session_id": str(session_id),
-                    },
-                )
-            finally:
-                if executor is not None:
-                    executor.shutdown(wait=False)
-                    logger.debug("ThreadPoolExecutor已关闭")
-            if not agent_created:
-                try:
-                    logger.info("使用无Memory模式创建Agent（回退）")
-                    agent = dialog_agent_manager.create_agent_with_memory(tools=tools)
-                    if agent is None:
-                        raise ValueError("Agent创建返回None（无Memory模式）")
-                    if not hasattr(agent, "stream_async"):
-                        raise ValueError("Agent对象缺少stream_async方法（无Memory模式）")
-                    logger.info(
-                        "Agent 创建完成（对话场景，无Memory模式 - 回退）",
-                        extra={
-                            "has_memory": False,
-                            "tool_count": len(tools),
-                            "fallback_reason": memory_fallback_reason,
-                        },
-                    )
-                except Exception as fallback_error:
-                    error_msg = f"Agent创建完全失败（包括回退）: {str(fallback_error)}"
-                    logger.error(
-                        error_msg,
-                        extra={
-                            "original_error": memory_fallback_reason,
-                            "fallback_error": str(fallback_error),
-                        },
-                    )
-                    raise ValueError(error_msg)
-        step7_duration = time.time() - step7_start_time
-        logger.info(
-            "⏱️ SPAN END: Step 7 - Agent创建完成",
-            extra={"total_duration_seconds": round(step7_duration, 2)},
-        )
+            # ✅ 复用缓存的 Agent 对象
+            agent = _agent
+            memory_client = None  # Agent 复用时不重新初始化 Memory
+            step7_duration = time.time() - step7_start_time
+            logger.info(
+                "Agent 缓存命中，复用已有 Agent",
+                extra={
+                    "agent_reused": True,
+                    "model_id": model_id,
+                    "prompt_type": prompt_type,
+                    "account_type": account_type,
+                    "elapsed_seconds": round(step7_duration, 2),
+                },
+            )
     except Exception as e:
         step7_duration = time.time() - step7_start_time
         error_msg = f"Failed to create agent: {str(e)}"
@@ -1244,7 +1446,8 @@ async def invoke(payload: dict[str, Any]):
         try:
             exec_span.set_attribute("costq_agents.agent.prompt", user_message[:200])
             exec_span.set_attribute(
-                "costq_agents.agent.has_memory", memory_client is not None and session_id is not None
+                "costq_agents.agent.has_memory",
+                memory_client is not None and session_id is not None,
             )
             logger.info(
                 "⏱️ SPAN START: Step 8 - Agent流式执行",
@@ -1262,6 +1465,7 @@ async def invoke(payload: dict[str, Any]):
 
             if has_images or has_files:
                 import base64
+
                 user_content = [{"text": user_message}]
 
                 # 追加图片 content blocks
@@ -1271,14 +1475,16 @@ async def invoke(payload: dict[str, Any]):
                             mime_type = img.get("mime_type", "image/jpeg")
                             b64_data = img.get("base64_data", "")
                             img_bytes = base64.b64decode(b64_data)
-                            user_content.append({
-                                "image": {
-                                    "format": mime_type.split("/")[-1],
-                                    "source": {
-                                        "bytes": img_bytes,
-                                    },
+                            user_content.append(
+                                {
+                                    "image": {
+                                        "format": mime_type.split("/")[-1],
+                                        "source": {
+                                            "bytes": img_bytes,
+                                        },
+                                    }
                                 }
-                            })
+                            )
                         except Exception as e:
                             logger.warning(
                                 "⚠️ 图片附件处理失败，跳过该图片",
@@ -1291,17 +1497,21 @@ async def invoke(payload: dict[str, Any]):
                         try:
                             mime_type = file_item.get("mime_type", "application/octet-stream")
                             doc_format = _mime_to_document_format(mime_type)
-                            doc_name = _sanitize_document_name(file_item.get("file_name", "document"))
+                            doc_name = _sanitize_document_name(
+                                file_item.get("file_name", "document")
+                            )
                             b64_data = file_item.get("base64_data", "")
-                            user_content.append({
-                                "document": {
-                                    "format": doc_format,
-                                    "name": doc_name,
-                                    "source": {
-                                        "bytes": base64.b64decode(b64_data),
-                                    },
+                            user_content.append(
+                                {
+                                    "document": {
+                                        "format": doc_format,
+                                        "name": doc_name,
+                                        "source": {
+                                            "bytes": base64.b64decode(b64_data),
+                                        },
+                                    }
                                 }
-                            })
+                            )
                         except Exception as e:
                             logger.warning(
                                 "⚠️ 文档附件处理失败，跳过该文件",
@@ -1314,7 +1524,9 @@ async def invoke(payload: dict[str, Any]):
                         "text_length": len(user_message),
                         "image_count": len(images_data) if has_images else 0,
                         "file_count": len(files_data) if has_files else 0,
-                        "image_types": [img.get("mime_type") for img in images_data] if has_images else [],
+                        "image_types": [img.get("mime_type") for img in images_data]
+                        if has_images
+                        else [],
                         "file_types": [f.get("mime_type") for f in files_data] if has_files else [],
                     },
                 )
@@ -1386,7 +1598,11 @@ async def invoke(payload: dict[str, Any]):
                                                         if isinstance(item["json"], dict)
                                                         else json.loads(item["json"])
                                                     )
-                                                except (json.JSONDecodeError, TypeError, ValueError):
+                                                except (
+                                                    json.JSONDecodeError,
+                                                    TypeError,
+                                                    ValueError,
+                                                ):
                                                     result_data = {"raw": str(item["json"])}
                                             elif "text" in item:
                                                 result_data = {"text": item["text"]}
@@ -1443,14 +1659,18 @@ async def invoke(payload: dict[str, Any]):
                                         else 0.0
                                     )
 
-                                    token_usage.update({
-                                        "input_tokens": input_tokens,
-                                        "output_tokens": output_tokens,
-                                        "cache_read_tokens": cache_read_tokens,
-                                        "cache_write_tokens": cache_write_tokens,
-                                        "input_cache_hit_rate": round(input_cache_hit_rate, 1),
-                                        "output_cache_hit_rate": round(output_cache_hit_rate, 1),
-                                    })
+                                    token_usage.update(
+                                        {
+                                            "input_tokens": input_tokens,
+                                            "output_tokens": output_tokens,
+                                            "cache_read_tokens": cache_read_tokens,
+                                            "cache_write_tokens": cache_write_tokens,
+                                            "input_cache_hit_rate": round(input_cache_hit_rate, 1),
+                                            "output_cache_hit_rate": round(
+                                                output_cache_hit_rate, 1
+                                            ),
+                                        }
+                                    )
 
                                     logger.info(
                                         "Token 统计已提取",
@@ -1532,6 +1752,8 @@ async def invoke(payload: dict[str, Any]):
         except Exception as e:
             stream_duration = time.time() - stream_start_time
             error_msg = f"Agent execution failed: {str(e)}"
+            # 异常降级：清空所有缓存，防止状态污染
+            _clear_all_cache(reason=(f"agent_execution_error: " f"{type(e).__name__}: {str(e)}"))
             logger.error(
                 "⏱️ SPAN END: Step 8 - Agent流式执行失败",
                 extra={
@@ -1552,8 +1774,7 @@ async def invoke(payload: dict[str, Any]):
             # ✅ GCP 临时凭证文件已废弃（Gateway 模式无需清理）
             if gcp_temp_file:
                 logger.warning(
-                    "⚠️ 检测到遗留的 GCP 临时凭证文件占位变量",
-                    extra={"file": gcp_temp_file}
+                    "⚠️ 检测到遗留的 GCP 临时凭证文件占位变量", extra={"file": gcp_temp_file}
                 )
 
             if context_token is not None:
@@ -1565,21 +1786,7 @@ async def invoke(payload: dict[str, Any]):
                         "Failed to detach OpenTelemetry context",
                         extra={"error": str(e), "error_type": type(e).__name__},
                     )
-            if "clients_dict" in locals() and clients_dict:
-                logger.info("Cleaning up MCP clients", extra={"client_count": len(clients_dict)})
-                for server_type, client in clients_dict.items():
-                    try:
-                        client.__exit__(None, None, None)
-                        logger.debug("MCP client cleaned", extra={"server_type": server_type})
-                    except Exception as e:
-                        logger.error(
-                            "Failed to clean MCP client",
-                            extra={
-                                "server_type": server_type,
-                                "error": str(e),
-                                "error_type": type(e).__name__,
-                            },
-                        )
+            # ✅ MCP 连接不再清理（由 microVM 销毁时自动回收）
             invoke_duration = time.time() - invoke_start_time
             breakdown = {}
             if "step7_start_time" in locals():
