@@ -132,7 +132,7 @@ agent_manager = None
 
 # ========== Agent/MCP 缓存（跨 invocation 复用）==========
 # 利用 microVM 进程持久性，缓存 Agent 和 MCP 连接以消除重复初始化开销
-_agent: Agent | None = None  # 缓存的 Strands Agent 实例
+_agent: "Agent | None" = None  # 缓存的 Strands Agent 实例
 _clients_dict: dict[str, Any] | None = None  # 缓存的 MCP 客户端字典
 _tools: list | None = None  # 缓存的工具列表
 _current_model_id: str | None = None  # 当前缓存 Agent 对应的 model_id
