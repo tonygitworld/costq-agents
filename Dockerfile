@@ -13,7 +13,8 @@ ENV UV_SYSTEM_PYTHON=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_NO_PROGRESS=1 \
     PYTHONUNBUFFERED=1 \
-    DOCKER_CONTAINER=1
+    DOCKER_CONTAINER=1 \
+    ENVIRONMENT=production
 
 # ========== 安装系统依赖 ==========
 # 注意：uvx 已经包含在基础镜像 ghcr.io/astral-sh/uv 中，无需单独安装
