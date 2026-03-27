@@ -67,8 +67,7 @@ class MCPManager:
         """初始化MCP管理器"""
         self.project_root = Path(__file__).parent.parent.parent
 
-        if not IS_PRODUCTION:
-            logger.info("✅ MCPManager初始化")
+        logger.info("MCPManager初始化完成")
 
     # ==================== Gateway MCP 配置属性 ====================
 
@@ -651,8 +650,13 @@ class MCPManager:
                         if client is not None:
                             clients[server_type] = client
                             elapsed = time.time() - start_time
-                            if not IS_PRODUCTION:
-                                logger.info(f"  ✅ {server_type} ({elapsed:.2f}s)")
+                            logger.info(
+                                "MCP客户端连接成功",
+                                extra={
+                                    "server_type": server_type,
+                                    "elapsed_seconds": round(elapsed, 2),
+                                },
+                            )
                         else:
                             errors[server_type] = error or "Unknown error"
                             logger.error(f"  ❌ {server_type}: {error}")
@@ -872,8 +876,10 @@ class MCPManager:
         for server_type, client in clients.items():
             try:
                 client.__exit__(None, None, None)  # type: ignore[arg-type]
-                if not IS_PRODUCTION:
-                    logger.info(f"✅ {server_type} MCP客户端已关闭")
+                logger.info(
+                    "MCP客户端已关闭",
+                    extra={"server_type": server_type},
+                )
             except Exception:
                 logger.error(
                     "MCP客户端关闭失败",
