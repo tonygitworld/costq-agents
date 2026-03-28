@@ -78,9 +78,6 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
-    # ✅ 新增：聊天会话关联
-    chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
-
     def to_dict(self) -> dict[str, str | bool | None]:
         """转换为字典"""
         return {
