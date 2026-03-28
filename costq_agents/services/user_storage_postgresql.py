@@ -39,9 +39,11 @@ class UserStoragePostgreSQL:
         """
         db = self._get_db()
         try:
+            org_id = str(uuid.uuid4())
             org = Organization(
-                id=str(uuid.uuid4()),
+                id=org_id,
                 name=name,
+                external_id=f"org-{org_id}",
                 is_active=is_active,  # ✅ 直接在创建时设置状态
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -98,12 +100,19 @@ class UserStoragePostgreSQL:
             if not org:
                 raise ValueError(f"组织不存在: {org_id}")
 
-            # ⚠️ 临时方案：数据库模型中 external_id 字段被注释，使用组织 ID 生成固定的 External ID
-            # 这样可以保证同一个组织的 External ID 始终一致
-            external_id = f"org-{org_id}"
-            logger.debug(f"🔑 生成 External ID: {external_id} for org: {org_id}")
+            # 已有值直接返回（兼容历史随机 external_id）
+            if org.external_id:
+                return org.external_id
 
+            # 缺失时按固定规则生成并持久化
+            external_id = f"org-{org_id}"
+            org.external_id = external_id
+            db.commit()
+            logger.info("External ID 已生成并写入数据库: org_id=%s", org_id)
             return external_id
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 

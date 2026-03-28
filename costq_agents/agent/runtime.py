@@ -749,10 +749,14 @@ async def invoke(payload: dict[str, Any]):
             return
         try:
             from costq_agents.services.iam_role_session_factory import IAMRoleSessionFactory
+            from costq_agents.services.user_storage_postgresql import UserStoragePostgreSQL
 
             logger.info("IAMRoleSessionFactory imported")
-            external_id = f"org-{org_id}" if org_id else None
-            logger.info("Generated external_id", extra={"external_id": external_id})
+            if not org_id:
+                raise ValueError("Organization ID is required for IAM Role authentication")
+            user_storage = UserStoragePostgreSQL()
+            external_id = user_storage.get_organization_external_id(str(org_id))
+            logger.info("Loaded organization external_id", extra={"external_id": external_id})
             logger.info("Creating IAMRoleSessionFactory instance")
             target_factory = IAMRoleSessionFactory.get_instance(
                 account_id=account_id, role_arn=role_arn, external_id=external_id, region=region
